@@ -50,6 +50,13 @@ endif()
 
 include(CheckAtomic)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows")
+else()
+set(CMAKE_CXX_FLAGS_COMMON "-g -Wall -Wextra")
+set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_COMMON}")
+set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_COMMON} -O3 -DNDEBUG")
+endif()
+
 set(WANGLE_HEADER_DIRS
   acceptor
   bootstrap
