@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include <gflags/gflags.h>
+#include <folly/portability/GFlags.h>
 
 #include <folly/init/Init.h>
 #include <wangle/service/Service.h>
@@ -49,8 +49,8 @@ class RpcService : public Service<Bonk, Xtruct> {
      * useful for testing dispatcher behavior by hand
      */
     // Wait for a bit
-    return futures::sleep(std::chrono::seconds(request.type))
-        .then([request]() {
+    return futures::sleepUnsafe(std::chrono::seconds(request.type))
+        .thenValue([request](auto&&) {
           Xtruct response;
           response.string_thing = "Stop saying " + request.message + "!";
           response.i32_thing = request.type;

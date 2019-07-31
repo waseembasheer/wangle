@@ -9,9 +9,15 @@ cmake_minimum_required(VERSION 3.0.2)
 
 project("wangle" VERSION 1.0.0 LANGUAGES CXX C)
 
-add_compile_options(-std=c++1y)
+add_compile_options(-std=c++1z)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-set(CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake/)
+set(CMAKE_MODULE_PATH
+  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/"
+  # for in-fbsource builds
+  "${CMAKE_CURRENT_SOURCE_DIR}/../opensource/fbcode_builder/CMake"
+  # For shipit-transformed builds
+  "${CMAKE_CURRENT_SOURCE_DIR}/../build/fbcode_builder/CMake"
+  ${CMAKE_MODULE_PATH})
 
 # When installing Folly & Wangle in a non-default prefix, this will let
 # projects linking against libwangle.so to find libfolly.so automatically.
@@ -37,11 +43,18 @@ if (NOT folly_FOUND)
 endif()
 
 find_package(fizz CONFIG REQUIRED)
-find_package(Boost REQUIRED COMPONENTS system thread filesystem regex context)
+find_package(Boost REQUIRED COMPONENTS system thread filesystem regex context
+                                       date_time program_options)
 find_package(OpenSSL REQUIRED)
 find_package(Glog REQUIRED)
-find_package(Gflags REQUIRED)
-find_package(Libevent REQUIRED)
+find_package(gflags CONFIG QUIET)
+if (gflags_FOUND)
+  message(STATUS "Found gflags from package config")
+  message(STATUS "gflags_CONFIG=${gflags_CONFIG}")
+else()
+  find_package(Gflags REQUIRED)
+endif()
+find_package(LibEvent MODULE REQUIRED)
 find_package(DoubleConversion REQUIRED)
 find_package(Threads REQUIRED)
 if (UNIX AND NOT APPLE)
@@ -63,7 +76,7 @@ set(WANGLE_HEADER_DIRS
   channel
   client
   codec
-  deprecated
+  portability
   service
   ssl
   util
@@ -81,6 +94,7 @@ set(WANGLE_SOURCES
   acceptor/AcceptorHandshakeManager.cpp
   acceptor/ConnectionManager.cpp
   acceptor/EvbHandshakeHelper.cpp
+  acceptor/FizzAcceptorHandshakeHelper.cpp
   acceptor/FizzConfigUtil.cpp
   acceptor/LoadShedConfiguration.cpp
   acceptor/ManagedConnection.cpp
@@ -92,13 +106,14 @@ set(WANGLE_SOURCES
   bootstrap/ServerBootstrap.cpp
   channel/FileRegion.cpp
   channel/Pipeline.cpp
+  client/persistence/FilePersistenceLayer.cpp
+  client/persistence/PersistentCacheCommon.cpp
   client/ssl/SSLSessionCacheData.cpp
   client/ssl/SSLSessionCacheUtils.cpp
   client/ssl/SSLSessionCallbacks.cpp
   codec/LengthFieldBasedFrameDecoder.cpp
   codec/LengthFieldPrepender.cpp
   codec/LineBasedFrameDecoder.cpp
-  deprecated/rx/Dummy.cpp
   ssl/ServerSSLContext.cpp
   ssl/SSLContextManager.cpp
   ssl/SSLSessionCacheManager.cpp
@@ -135,7 +150,7 @@ target_include_directories(
     ${OPENSSL_INCLUDE_DIR}
     ${GLOG_INCLUDE_DIRS}
     ${GFLAGS_INCLUDE_DIRS}
-    ${LIBEVENT_INCLUDE_DIRS}
+    ${LIBEVENT_INCLUDE_DIR}
     ${DOUBLE_CONVERSION_INCLUDE_DIRS}
 )
 target_link_libraries(wangle PUBLIC
@@ -145,7 +160,7 @@ target_link_libraries(wangle PUBLIC
   ${OPENSSL_LIBRARIES}
   ${GLOG_LIBRARIES}
   ${GFLAGS_LIBRARIES}
-  ${LIBEVENT_LIBRARIES}
+  ${LIBEVENT_LIB}
   ${DOUBLE_CONVERSION_LIBRARIES}
   ${CMAKE_DL_LIBS}
   ${LIBRT_LIBRARIES}
@@ -192,7 +207,7 @@ ENDIF(CMAKE_CROSSCOMPILING)
 if(BUILD_TESTS)
   enable_testing()
 
-  find_package(GMock REQUIRED)
+  find_package(GMock MODULE)
   if(NOT LIBGMOCK_FOUND)
     include(ExternalProject)
 
@@ -236,8 +251,14 @@ if(BUILD_TESTS)
   macro(add_gtest test_source test_name)
   add_executable(${test_name} ${test_source} test/TestMain.cpp)
   target_include_directories(
-    ${test_name} PUBLIC ${LIBGMOCK_INCLUDE_DIR} ${LIBGTEST_INCLUDE_DIR})
-  target_link_libraries(${test_name} wangle ${LIBGMOCK_LIBRARIES})
+    ${test_name} PUBLIC ${LIBGMOCK_INCLUDE_DIR} ${LIBGTEST_INCLUDE_DIR}
+  )
+  target_link_libraries(
+    ${test_name}
+    wangle
+    ${LIBGMOCK_LIBRARIES}
+    ${LIBEVENT_LIB}
+  )
   add_test(${test_name} bin/${test_name})
   endmacro(add_gtest)
 
@@ -254,7 +275,6 @@ if(BUILD_TESTS)
   add_gtest(channel/test/OutputBufferingHandlerTest.cpp OutputBufferingHandlerTest)
   add_gtest(channel/test/PipelineTest.cpp PipelineTest)
   add_gtest(codec/test/CodecTest.cpp CodecTest)
-  add_gtest(deprecated/rx/test/RxTest.cpp RxTest)
   # this test fails with an exception
   #  add_gtest(service/test/ServiceTest.cpp ServiceTest)
   # this test requires arguments?

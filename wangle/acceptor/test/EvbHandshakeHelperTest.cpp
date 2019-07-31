@@ -117,9 +117,8 @@ TEST_F(EvbHandshakeHelperTest, TestFailPath) {
   EXPECT_NE(nullptr, sockPtr_->getEventBase());
   EXPECT_CALL(mockCb_, connectionError_(_, _, _))
       .WillOnce(Invoke([&](auto sock, auto&&, auto&&) {
-        EXPECT_EQ(original_.getEventBase(), sock->getEventBase());
+        EXPECT_EQ(sock, nullptr);
         EXPECT_EQ(originalThreadId_, std::this_thread::get_id());
-        sock->destroy();
         barrier.post();
       }));
 
@@ -128,8 +127,14 @@ TEST_F(EvbHandshakeHelperTest, TestFailPath) {
         EXPECT_EQ(alternate_.getEventBase(), sock->getEventBase());
         EXPECT_EQ(alternateThreadId_, std::this_thread::get_id());
 
-        sock->getEventBase()->runInLoop(
-            [sock, cb] { cb->connectionError(sock, {}, folly::none); });
+        sock->getEventBase()->runInLoop([sock, cb, this] {
+          folly::DelayedDestruction::DestructorGuard dg(mockHelper_);
+          EXPECT_FALSE(mockHelper_->getDestroyPending());
+          cb->connectionError(sock, {}, folly::none);
+          EXPECT_TRUE(mockHelper_->getDestroyPending());
+          EXPECT_EQ(alternate_.getEventBase(), sock->getEventBase());
+          sock->destroy();
+        });
       }));
 
   original_.getEventBase()->runInEventBaseThreadAndWait(
@@ -145,11 +150,8 @@ TEST_F(EvbHandshakeHelperTest, TestDropConnection) {
 
   EXPECT_CALL(*mockHelper_, dropConnection(_)).WillOnce(Invoke([&](auto) {
     EXPECT_EQ(alternateThreadId_, std::this_thread::get_id());
-    // Need to wait here else its possible the test destructor may be invoked
-    // before the lamda below actually tries to execute.
-    alternate_.getEventBase()->runInEventBaseThreadAndWait([=]{
-        evbHelper_->connectionError(sslSock_, {}, {});
-    });
+    CHECK(alternate_.getEventBase()->isInEventBaseThread());
+    evbHelper_->connectionError(sslSock_, {}, {});
     barrier.post();
   }));
 

@@ -21,6 +21,7 @@
 #include <chrono>
 #include <string>
 
+#include <folly/Optional.h>
 #include <folly/SocketAddress.h>
 #include <folly/portability/Sockets.h>
 
@@ -48,6 +49,14 @@ struct HTTPHeaderSize {
    * compression or after decompression, in plain-text format.
    */
   size_t uncompressed{0};
+
+  /**
+   * The number of bytes encoded as a compressed header block.
+   * Header compression algorithms generate a header block plus some control
+   * information. The `compressed` field accounts for both. So the control
+   * information size can be computed as `compressed` - `compressedBlock`
+   */
+  size_t compressedBlock{0};
 };
 
 /**
@@ -108,6 +117,16 @@ struct TransportInfo {
    * slow start threshold
    */
   int64_t ssthresh{-1};
+
+  /*
+   * Congestion avoidance algorithm
+   */
+  std::string caAlgo;
+
+  /*
+   * Socket max pacing rate
+   */
+  int32_t maxPacingRate{-1};
 
 #ifdef __APPLE__
   typedef tcp_connection_info tcp_info;
@@ -270,6 +289,16 @@ struct TransportInfo {
   int32_t timeToLastByte{-1};
 
   /*
+   * time to first body byte written by the kernel to the NIC
+   */
+  int32_t timeToFirstByteTx{-1};
+
+  /*
+   * time to last body byte written by the kernel to the NIC
+   */
+  int32_t timeToLastByteTx{-1};
+
+  /*
    * time to TCP Ack received for the last written body byte
    */
   int32_t timeToLastBodyByteAck{-1};
@@ -305,6 +334,28 @@ struct TransportInfo {
    * body bytes written
    */
   uint32_t egressBodySize{0};
+
+  /*
+   * session offset of first body byte.
+   *
+   * Protocols that support preemption and multiplexing (e.g., HTTP/2) may write
+   * multiple response body in parallel to the transport. Capturing the first
+   * and last body byte offsets enables examination of this multiplexing.
+   *
+   * The difference between these two offsets is also useful for measuring
+   * throughput as it provides the total number of bytes transferred via
+   * transport between the time the first byte of the response was flushed
+   * (timeToFirstByte) and when the ack was received for the last byte in the
+   * response (timeToLastBodyByteAck).
+   */
+  folly::Optional<uint64_t> maybeFirstBodyByteOffset;
+
+  /*
+   * session offset of last body byte.
+   *
+   * see maybeFirstBodyByteOffset
+   */
+  folly::Optional<uint64_t> maybeLastBodyByteOffset;
 
   /*
    * value of errno in case of getsockopt() error
@@ -382,6 +433,12 @@ struct TransportInfo {
   std::shared_ptr<std::string> tcpSignature{nullptr};
 
   /*
+   * Hash of some of TCP/IP headers fields (especially tcp_options) values,
+   * sometimes concatenated with raw fingerprint (that gives the hash).
+   */
+  std::shared_ptr<std::string> tcpFingerprint{nullptr};
+
+  /*
    * Whether or not TCP fast open succeded on this connection. Failure can occur
    * due to several reasons, including cookies not matching or TFO not being
    * advertised by the client.
@@ -405,6 +462,20 @@ struct TransportInfo {
    * initialize the fields related with tcp_info
    */
   bool initWithSocket(const folly::AsyncSocket* sock);
+
+#if defined(__linux__) || defined(__FreeBSD__)
+  /*
+   * Perform the getsockopt(2) syscall to fetch TCP congestion control algorithm
+   * for a given socket.
+   */
+  bool readTcpCongestionControl(const folly::AsyncSocket* sock);
+
+  /*
+   * Perform the getsockopt(2) syscall to fetch max pacing rate for a given
+   * socket.
+   */
+  bool readMaxPacingRate(const folly::AsyncSocket* sock);
+#endif // defined(__linux__) || defined(__FreeBSD__)
 
   /*
    * Get the kernel's estimate of round-trip time (RTT) to the transport's peer

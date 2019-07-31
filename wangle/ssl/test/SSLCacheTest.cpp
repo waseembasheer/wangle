@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 #include <folly/io/async/EventBase.h>
-#include <gflags/gflags.h>
+#include <folly/portability/GFlags.h>
 #include <iostream>
 #include <thread>
 #include <folly/io/async/AsyncSSLSocket.h>
@@ -221,8 +221,8 @@ SSLCacheClient::start()
 void
 SSLCacheClient::connectSuccess() noexcept
 {
-  sslSocket_ = new AsyncSSLSocket(ctx_, eventBase_, socket_->detachFd(),
-                                   false);
+  sslSocket_ = new AsyncSSLSocket(
+      ctx_, eventBase_, socket_->detachNetworkSocket(), false);
 
   if (!FLAGS_handshakes) {
     if (session_ != nullptr)

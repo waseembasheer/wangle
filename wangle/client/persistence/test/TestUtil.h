@@ -21,7 +21,7 @@
 
 #include <folly/Memory.h>
 #include <folly/portability/Unistd.h>
-#include <gtest/gtest.h>
+#include <folly/portability/GTest.h>
 #include <wangle/client/persistence/FilePersistentCache.h>
 
 namespace wangle {
@@ -36,7 +36,12 @@ void testSimplePutGet(
   typedef FilePersistentCache<K, V, MutexT> CacheType;
   size_t cacheCapacity = 10;
   {
-    CacheType cache(filename, cacheCapacity, std::chrono::seconds(150));
+    CacheType cache(
+        filename,
+        PersistentCacheConfig::Builder()
+            .setCapacity(cacheCapacity)
+            .setSyncInterval(std::chrono::seconds(150))
+            .build());
     EXPECT_FALSE(cache.get(keys[0]).hasValue());
     EXPECT_FALSE(cache.get(keys[1]).hasValue());
     cache.put(keys[0], values[0]);
@@ -46,7 +51,12 @@ void testSimplePutGet(
     EXPECT_EQ(cache.get(keys[1]).value(), values[1]);
   }
   {
-    CacheType cache(filename, cacheCapacity, std::chrono::seconds(150));
+    CacheType cache(
+        filename,
+        PersistentCacheConfig::Builder()
+            .setCapacity(cacheCapacity)
+            .setSyncInterval(std::chrono::seconds(150))
+            .build());
     EXPECT_EQ(cache.size(), 2);
     EXPECT_EQ(cache.get(keys[0]).value(), values[0]);
     EXPECT_EQ(cache.get(keys[1]).value(), values[1]);
@@ -57,7 +67,12 @@ void testSimplePutGet(
     EXPECT_FALSE(cache.get(keys[1]).hasValue());
   }
   {
-    CacheType cache(filename, cacheCapacity, std::chrono::seconds(150));
+    CacheType cache(
+        filename,
+        PersistentCacheConfig::Builder()
+            .setCapacity(cacheCapacity)
+            .setSyncInterval(std::chrono::seconds(150))
+            .build());
     EXPECT_EQ(cache.size(), 1);
     EXPECT_EQ(cache.get(keys[0]).value(), values[0]);
     EXPECT_FALSE(cache.get(keys[1]).hasValue());
@@ -67,7 +82,12 @@ void testSimplePutGet(
     EXPECT_FALSE(cache.get(keys[1]).hasValue());
   }
   {
-    CacheType cache(filename, cacheCapacity, std::chrono::seconds(150));
+    CacheType cache(
+        filename,
+        PersistentCacheConfig::Builder()
+            .setCapacity(cacheCapacity)
+            .setSyncInterval(std::chrono::seconds(150))
+            .build());
     EXPECT_EQ(cache.size(), 0);
     EXPECT_FALSE(cache.get(keys[0]).hasValue());
     EXPECT_FALSE(cache.get(keys[1]).hasValue());

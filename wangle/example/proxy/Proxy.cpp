@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include <gflags/gflags.h>
+#include <folly/portability/GFlags.h>
 
 #include <folly/init/Init.h>
 #include <wangle/bootstrap/ClientBootstrap.h>
@@ -75,19 +75,30 @@ class ProxyFrontendHandler : public BytesToBytesHandler {
       remoteAddress_(remoteAddress) {}
 
   void read(Context*, IOBufQueue& q) override {
-    backendPipeline_->write(q.move());
+    buffer_.append(q);
+    if (!backendPipeline_) {
+      return;
+    }
+
+    backendPipeline_->write(buffer_.move());
   }
 
   void readEOF(Context* ctx) override {
     LOG(INFO) << "Connection closed by local host";
-    backendPipeline_->close().then([this, ctx](){
+    if (!backendPipeline_) {
+      return;
+    }
+    backendPipeline_->close().thenValue([this, ctx](auto&&){
       this->close(ctx);
     });
   }
 
   void readException(Context* ctx, exception_wrapper e) override {
     LOG(ERROR) << "Local error: " << exceptionStr(e);
-    backendPipeline_->close().then([this, ctx](){
+    if (!backendPipeline_) {
+      return;
+    }
+    backendPipeline_->close().thenValue([this, ctx](auto&&){
       this->close(ctx);
     });
   }
@@ -105,21 +116,24 @@ class ProxyFrontendHandler : public BytesToBytesHandler {
     client_.pipelineFactory(
         std::make_shared<ProxyBackendPipelineFactory>(frontendPipeline));
     client_.connect(remoteAddress_)
-      .then([this, frontendPipeline](DefaultPipeline* pipeline){
-        backendPipeline_ = pipeline;
-        // Resume read
-        frontendPipeline->transportActive();
-      })
-      .onError([this, ctx](const std::exception& e){
-        LOG(ERROR) << "Connect error: " << exceptionStr(e);
-        this->close(ctx);
-      });
+        .thenValue([this, frontendPipeline](DefaultPipeline* pipeline) {
+          backendPipeline_ = pipeline;
+          // Resume read
+          frontendPipeline->transportActive();
+        })
+        .thenError(
+            folly::tag_t<std::exception>{},
+            [this, ctx](const std::exception& e) {
+              LOG(ERROR) << "Connect error: " << exceptionStr(e);
+              this->close(ctx);
+            });
   }
 
  private:
   SocketAddress remoteAddress_;
   ClientBootstrap<DefaultPipeline> client_;
-  DefaultPipeline* backendPipeline_;
+  DefaultPipeline* backendPipeline_{nullptr};
+  folly::IOBufQueue buffer_{folly::IOBufQueue::cacheChainLength()};
 };
 
 class ProxyFrontendPipelineFactory : public PipelineFactory<DefaultPipeline> {

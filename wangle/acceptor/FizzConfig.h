@@ -21,7 +21,7 @@
 namespace wangle {
 
 struct FizzConfig {
-  bool enableFizz{false};
+  bool enableFizz{true};
   std::vector<fizz::ProtocolVersion> supportedVersions;
   std::vector<std::vector<fizz::CipherSuite>> supportedCiphers;
   std::vector<fizz::SignatureScheme> supportedSigSchemes;
@@ -31,6 +31,7 @@ struct FizzConfig {
   bool earlyDataFbOnly{false};
 
   folly::Optional<uint16_t> maxRecord;
+  std::vector<fizz::CertificateCompressionAlgorithm> supportedCompressionAlgorithms;
 };
 
 struct FizzClientConfig {

@@ -40,12 +40,14 @@ namespace wangle {
  */
 class FilePoller {
  public:
+  using FileTime = std::chrono::system_clock::time_point;
+
   struct FileModificationData {
     FileModificationData() {}
-    FileModificationData(bool fileExists, time_t modificationTime)
+    FileModificationData(bool fileExists, FileTime modificationTime)
         : exists(fileExists), modTime(modificationTime) {}
     bool exists{false};
-    time_t modTime{0};
+    FileTime modTime{};
   };
   using Cob = std::function<void()>;
   // First arg is info about previous modification of a file,
@@ -117,7 +119,8 @@ class FilePoller {
       const FilePoller::FileModificationData& fModData,
       std::chrono::seconds expireTime) {
     return fModData.exists &&
-        (time(nullptr) < fModData.modTime + expireTime.count());
+        std::chrono::time_point_cast<std::chrono::seconds>(
+            FileTime::clock::now()) < fModData.modTime + expireTime;
   }
 
   static bool doAlwaysCondInternal(
@@ -130,7 +133,7 @@ class FilePoller {
       const FileModificationData& oldModData,
       const FileModificationData& modData) {
     const bool fileStillExists = oldModData.exists && modData.exists;
-    const bool fileTouched = modData.modTime != oldModData.modTime;
+    const bool fileTouched = oldModData.modTime != modData.modTime;
     const bool fileCreated = !oldModData.exists && modData.exists;
     return (fileStillExists && fileTouched) || fileCreated;
   }

@@ -19,6 +19,7 @@
 #include <folly/Memory.h>
 #include <folly/ScopeGuard.h>
 #include <folly/json.h>
+#include <wangle/client/persistence/FilePersistenceLayer.h>
 #include <wangle/client/persistence/LRUPersistentCache.h>
 
 namespace wangle {
@@ -37,14 +38,13 @@ namespace wangle {
  * true support arbitrary types is written.
  */
 template<typename K, typename V, typename M = std::mutex>
-class FilePersistentCache : public PersistentCache<K, V>,
-                            private boost::noncopyable {
+class FilePersistentCache : public PersistentCache<K, V> {
  public:
-  explicit FilePersistentCache(
-    const std::string& file,
-    const std::size_t cacheCapacity,
-    const std::chrono::seconds& syncInterval = std::chrono::seconds(5),
-    const int nSyncRetries = 3);
+  FilePersistentCache(const std::string& file, PersistentCacheConfig config)
+    : cache_(std::make_shared<LRUPersistentCache<K, V, M>>(std::move(config),
+          std::make_unique<FilePersistenceLayer>(file))) {
+    cache_->init();
+  }
 
   ~FilePersistentCache() override {}
 
@@ -52,29 +52,31 @@ class FilePersistentCache : public PersistentCache<K, V>,
    * PersistentCache operations
    */
   folly::Optional<V> get(const K& key) override {
-    return cache_.get(key);
+    return cache_->get(key);
   }
 
   void put(const K& key, const V& val) override {
-    cache_.put(key, val);
+    cache_->put(key, val);
   }
 
   bool remove(const K& key) override {
-    return cache_.remove(key);
+    return cache_->remove(key);
   }
 
   void clear(bool clearPersistence = false) override {
-    cache_.clear(clearPersistence);
+    cache_->clear(clearPersistence);
   }
 
   size_t size() override {
-    return cache_.size();
+    return cache_->size();
   }
 
  private:
-  LRUPersistentCache<K, V, M> cache_;
+  FilePersistentCache(const FilePersistentCache&) = delete;
+  FilePersistentCache& operator=(const FilePersistentCache&) = delete;
+
+ private:
+  typename LRUPersistentCache<K, V, M>::Ptr cache_;
 };
 
 } // namespace wangle
-
-#include <wangle/client/persistence/FilePersistentCache-inl.h>

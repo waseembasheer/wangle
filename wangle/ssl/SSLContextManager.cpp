@@ -245,6 +245,30 @@ void SSLContextManager::resetSSLContextConfigs(
   contexts_.swap(contexts);
 }
 
+void SSLContextManager::removeSSLContextConfig(const SSLContextKey& key) {
+  // The default context can't be dropped.
+  DNString defaultName(contexts_.defaultCtxDomainName.data(),
+                       contexts_.defaultCtxDomainName.length());
+
+  if (key.dnString == defaultName) {
+    string msg = folly::to<string>("Cert for the default domain ",
+                                   key.dnString.c_str(),
+                                   " can not be removed");
+    LOG(ERROR) << msg;
+    throw std::invalid_argument(msg);
+  }
+
+  auto mapIt = contexts_.dnMap.find(key);
+  if (mapIt != contexts_.dnMap.end()) {
+    auto vIt = std::find(contexts_.ctxs.begin(),
+                         contexts_.ctxs.end(),
+                         mapIt->second);
+    CHECK(vIt != contexts_.ctxs.end());
+    contexts_.ctxs.erase(vIt);
+    contexts_.dnMap.erase(mapIt);
+  }
+}
+
 void SSLContextManager::addSSLContextConfig(
   const SSLContextConfig& ctxConfig,
   const SSLCacheOptions& cacheOptions,
@@ -257,89 +281,15 @@ void SSLContextManager::addSSLContextConfig(
     contexts = &contexts_;
   }
 
-  unsigned numCerts = 0;
-  std::string commonName;
-  std::string lastCertPath;
-  std::unique_ptr<std::list<std::string>> subjectAltName;
   auto sslCtx =
       std::make_shared<ServerSSLContext>(ctxConfig.sslVersion);
-  for (const auto& cert : ctxConfig.certificates) {
-    try {
-      if (ctxConfig.keyOffloadParams.offloadType.empty()) {
-        // The private key lives in the same process
-        // This needs to be called before loadPrivateKey().
-        if (!cert.passwordPath.empty()) {
-          auto sslPassword = std::make_shared<folly::PasswordInFile>(
-              cert.passwordPath);
-          sslCtx->passwordCollector(std::move(sslPassword));
-        }
-        sslCtx->loadCertKeyPairFromFiles(
-          cert.certPath.c_str(),
-          cert.keyPath.c_str(),
-          "PEM",
-          "PEM");
-      } else {
-        loadCertKeyPairExternal(sslCtx, ctxConfig, cert.certPath);
-      }
-    } catch (const std::exception& ex) {
-        // The exception isn't very useful without the certificate path name,
-        // so throw a new exception that includes the path to the certificate.
-        string msg = folly::to<string>("error loading SSL certificate ",
-                                       cert.certPath, ": ",
-                                       folly::exceptionStr(ex));
-        LOG(ERROR) << msg;
-        throw std::runtime_error(msg);
-    }
 
-    // Verify that the Common Name and (if present) Subject Alternative Names
-    // are the same for all the certs specified for the SSL context.
-    numCerts++;
-    X509* x509 = getX509(sslCtx->getSSLCtx());
-    if (!x509) {
-      throw std::runtime_error(
-          folly::to<std::string>(
-              "Certificate: ", cert.certPath, " is invalid"));
-    }
-    auto guard = folly::makeGuard([x509] { X509_free(x509); });
-    auto cn = SSLUtil::getCommonName(x509);
-    if (!cn) {
-      throw std::runtime_error(folly::to<string>("Cannot get CN for X509 ",
-                                                 cert.certPath));
-    }
-    auto altName = SSLUtil::getSubjectAltName(x509);
-    VLOG(2) << "cert " << cert.certPath << " CN: " << *cn;
-    if (altName) {
-      altName->sort();
-      VLOG(2) << "cert " << cert.certPath << " SAN: " << flattenList(*altName);
-    } else {
-      VLOG(2) << "cert " << cert.certPath << " SAN: " << "{none}";
-    }
-    if (numCerts == 1) {
-      commonName = *cn;
-      subjectAltName = std::move(altName);
-    } else {
-      if (commonName != *cn) {
-        throw std::runtime_error(folly::to<string>("X509 ", cert.certPath,
-                                          " does not have same CN as ",
-                                          lastCertPath));
-      }
-      if (altName == nullptr) {
-        if (subjectAltName != nullptr) {
-          throw std::runtime_error(folly::to<string>("X509 ", cert.certPath,
-                                            " does not have same SAN as ",
-                                            lastCertPath));
-        }
-      } else {
-        if ((subjectAltName == nullptr) || (*altName != *subjectAltName)) {
-          throw std::runtime_error(folly::to<string>("X509 ", cert.certPath,
-                                            " does not have same SAN as ",
-                                            lastCertPath));
-        }
-      }
-    }
-    lastCertPath = cert.certPath;
+  std::string commonName;
+  if (ctxConfig.offloadDisabled) {
+    loadCertKeyPairsInSSLContext(sslCtx, ctxConfig, commonName);
+  } else {
+    loadCertKeyPairsInSSLContextExternal(sslCtx, ctxConfig, commonName);
   }
-
   overrideConfiguration(sslCtx, ctxConfig);
 
   // Let the server pick the highest performing cipher from among the client's
@@ -397,7 +347,7 @@ void SSLContextManager::addSSLContextConfig(
   if (ctxConfig.sessionContext && !ctxConfig.sessionContext->empty()) {
     sessionIdContext = *ctxConfig.sessionContext;
   }
-  VLOG(2) << "For vip " << vipName_ << ", CN " << commonName
+  VLOG(2) << "For vip " << vipName_
           << ", setting sid_ctx " << sessionIdContext;
   sslCtx->setSessionCacheContext(sessionIdContext);
 
@@ -425,6 +375,127 @@ void SSLContextManager::addSSLContextConfig(
   }
 
 }
+
+void SSLContextManager::loadCertKeyPairsInSSLContext(
+    const std::shared_ptr<folly::SSLContext>& sslCtx,
+    const SSLContextConfig& ctxConfig,
+    std::string& commonName) {
+  unsigned numCerts = 0;
+  std::string lastCertPath;
+  std::unique_ptr<std::list<std::string>> subjectAltName;
+
+  for (const auto& cert : ctxConfig.certificates) {
+    if (cert.isBuffer) {
+      sslCtx->loadCertKeyPairFromBufferPEM(cert.certPath, cert.keyPath);
+    } else {
+      loadCertsFromFiles(sslCtx, cert);
+    }
+    // Verify that the Common Name and (if present) Subject Alternative Names
+    // are the same for all the certs specified for the SSL context.
+    ++numCerts;
+    verifyCertNames(sslCtx,
+                    cert.certPath,
+                    commonName,
+                    subjectAltName,
+                    lastCertPath,
+                    (numCerts == 1));
+    lastCertPath = cert.certPath;
+  }
+}
+
+void SSLContextManager::loadCertsFromFiles(
+    const std::shared_ptr<folly::SSLContext>& sslCtx,
+    const SSLContextConfig::CertificateInfo& cert) {
+  try {
+    // The private key lives in the same process
+    // This needs to be called before loadPrivateKey().
+    if (!cert.passwordPath.empty()) {
+      auto sslPassword = std::make_shared<folly::PasswordInFile>(
+          cert.passwordPath);
+      sslCtx->passwordCollector(std::move(sslPassword));
+    }
+    sslCtx->loadCertKeyPairFromFiles(
+      cert.certPath.c_str(),
+      cert.keyPath.c_str(),
+      "PEM",
+      "PEM");
+  } catch (const std::exception& ex) {
+    // The exception isn't very useful without the certificate path name,
+    // so throw a new exception that includes the path to the certificate.
+    string msg = folly::to<string>("error loading SSL certificate ",
+                                   cert.certPath, ": ",
+                                   folly::exceptionStr(ex));
+    LOG(ERROR) << msg;
+    throw std::runtime_error(msg);
+  }
+}
+
+void SSLContextManager::verifyCertNames(
+  const std::shared_ptr<folly::SSLContext>& sslCtx,
+  const std::string& description,
+  std::string& commonName,
+  std::unique_ptr<std::list<std::string>>& subjectAltName,
+  const std::string& lastCertPath,
+  bool firstCert) {
+  X509* x509 = getX509(sslCtx->getSSLCtx());
+  if (!x509) {
+    throw std::runtime_error(
+        folly::to<std::string>(
+            "Certificate: ", description, " is invalid"));
+  }
+  auto guard = folly::makeGuard([x509] { X509_free(x509); });
+  auto cn = SSLUtil::getCommonName(x509);
+  if (!cn) {
+    throw std::runtime_error(folly::to<string>("Cannot get CN for X509 ",
+                                               description));
+  }
+  auto altName = SSLUtil::getSubjectAltName(x509);
+  VLOG(2) << "cert " << description << " CN: " << *cn;
+  if (altName) {
+    altName->sort();
+    VLOG(2) << "cert " << description << " SAN: " << flattenList(*altName);
+  } else {
+    VLOG(2) << "cert " << description << " SAN: " << "{none}";
+  }
+  if (firstCert) {
+    commonName = *cn;
+    subjectAltName = std::move(altName);
+  } else {
+    if (commonName != *cn) {
+      throw std::runtime_error(folly::to<string>("X509 ", description,
+                                        " does not have same CN as ",
+                                        lastCertPath));
+    }
+    if (altName == nullptr) {
+      if (subjectAltName != nullptr) {
+        throw std::runtime_error(folly::to<string>("X509 ", description,
+                                          " does not have same SAN as ",
+                                          lastCertPath));
+      }
+    } else {
+      if ((subjectAltName == nullptr) || (*altName != *subjectAltName)) {
+        throw std::runtime_error(folly::to<string>("X509 ", description,
+                                          " does not have same SAN as ",
+                                          lastCertPath));
+      }
+    }
+  }
+}
+
+void SSLContextManager::setDefaultCtxDomainName(
+    const std::string& name,
+    SslContexts* contexts) {
+  contexts = contexts ? contexts : &contexts_;
+  contexts->defaultCtxDomainName = name;
+}
+
+void SSLContextManager::addServerContext(
+    std::shared_ptr<ServerSSLContext> sslCtx,
+    SslContexts* contexts) {
+  contexts = contexts ? contexts : &contexts_;
+  contexts->ctxs.emplace_back(sslCtx);
+}
+
 
 #ifdef PROXYGEN_HAVE_SERVERNAMECALLBACK
 SSLContext::ServerNameCallbackResult
@@ -473,44 +544,38 @@ SSLContextManager::serverNameCallback(SSL* ssl) {
   }
 
   DNString dnstr(sn, snLen);
-  uint32_t count = 0;
-  do {
-    // First look for a context with the exact crypto needed. Weaker crypto will
-    // be in the map as best available if it is the best we have for that
-    // subject name.
-    SSLContextKey key(dnstr, certCryptoReq);
-    ctx = getSSLCtx(key);
+  // First look for a context with the exact crypto needed. Weaker crypto will
+  // be in the map as best available if it is the best we have for that
+  // subject name.
+  SSLContextKey key(dnstr, certCryptoReq);
+  ctx = getSSLCtx(key);
+  if (ctx) {
+    sslSocket->switchServerSSLContext(ctx);
+    if (clientHelloTLSExtStats_) {
+      if (reqHasServerName) {
+        clientHelloTLSExtStats_->recordMatch();
+      }
+      clientHelloTLSExtStats_->recordCertCrypto(certCryptoReq, certCryptoReq);
+    }
+    return SSLContext::SERVER_NAME_FOUND;
+  }
+
+  // If we didn't find an exact match, look for a cert with upgraded crypto.
+  if (certCryptoReq != CertCrypto::BEST_AVAILABLE) {
+    SSLContextKey fallbackKey(dnstr, CertCrypto::BEST_AVAILABLE);
+    ctx = getSSLCtx(fallbackKey);
     if (ctx) {
       sslSocket->switchServerSSLContext(ctx);
       if (clientHelloTLSExtStats_) {
         if (reqHasServerName) {
           clientHelloTLSExtStats_->recordMatch();
         }
-        clientHelloTLSExtStats_->recordCertCrypto(certCryptoReq, certCryptoReq);
+        clientHelloTLSExtStats_->recordCertCrypto(
+            certCryptoReq, CertCrypto::BEST_AVAILABLE);
       }
       return SSLContext::SERVER_NAME_FOUND;
     }
-
-    // If we didn't find an exact match, look for a cert with upgraded crypto.
-    if (certCryptoReq != CertCrypto::BEST_AVAILABLE) {
-      SSLContextKey fallbackKey(dnstr, CertCrypto::BEST_AVAILABLE);
-      ctx = getSSLCtx(fallbackKey);
-      if (ctx) {
-        sslSocket->switchServerSSLContext(ctx);
-        if (clientHelloTLSExtStats_) {
-          if (reqHasServerName) {
-            clientHelloTLSExtStats_->recordMatch();
-          }
-          clientHelloTLSExtStats_->recordCertCrypto(
-              certCryptoReq, CertCrypto::BEST_AVAILABLE);
-        }
-        return SSLContext::SERVER_NAME_FOUND;
-      }
-    }
-
-    // Give the noMatchFn one chance to add the correct cert
   }
-  while (count++ == 0 && noMatchFn_ && noMatchFn_(sn));
 
   VLOG(6) << folly::stringPrintf("Cannot find a SSL_CTX for \"%s\"", sn);
 
@@ -555,10 +620,9 @@ SSLContextManager::ctxSetupByOpensslFeature(
 
   // NPN (Next Protocol Negotiation)
   if (!ctxConfig.nextProtocols.empty()) {
-#ifdef OPENSSL_NPN_NEGOTIATED
+#if FOLLY_OPENSSL_HAS_ALPN
     sslCtx->setRandomizedAdvertisedNextProtocols(
-        ctxConfig.nextProtocols,
-        SSLContext::NextProtocolType::ALPN);
+        ctxConfig.nextProtocols);
 #else
     OPENSSL_MISSING_FEATURE(NPN);
 #endif
@@ -566,7 +630,6 @@ SSLContextManager::ctxSetupByOpensslFeature(
 
   // SNI
 #ifdef PROXYGEN_HAVE_SERVERNAMECALLBACK
-  noMatchFn_ = ctxConfig.sniNoMatchFn;
   if (ctxConfig.isDefault) {
     if (contexts.defaultCtx) {
       throw std::runtime_error(">1 X509 is set as default");
@@ -581,6 +644,10 @@ SSLContextManager::ctxSetupByOpensslFeature(
   if (contexts.ctxs.size() > 1) {
     OPENSSL_MISSING_FEATURE(SNI);
   }
+#endif
+#ifdef SSL_OP_NO_RENEGOTIATION
+  // Disable renegotiation at the OpenSSL layer
+  sslCtx->setOptions(SSL_OP_NO_RENEGOTIATION);
 #endif
 }
 
@@ -638,8 +705,7 @@ SSLContextManager::insert(shared_ptr<ServerSSLContext> sslCtx,
   }
 
   // Insert by CN
-  insertSSLCtxByDomainName(cn->c_str(),
-                           cn->length(),
+  insertSSLCtxByDomainName(*cn,
                            sslCtx,
                            contexts,
                            certCrypto);
@@ -648,8 +714,7 @@ SSLContextManager::insert(shared_ptr<ServerSSLContext> sslCtx,
   auto altNames = SSLUtil::getSubjectAltName(x509);
   if (altNames) {
     for (auto& name : *altNames) {
-      insertSSLCtxByDomainName(name.c_str(),
-                               name.length(),
+      insertSSLCtxByDomainName(name,
                                sslCtx,
                                contexts,
                                certCrypto);
@@ -657,20 +722,19 @@ SSLContextManager::insert(shared_ptr<ServerSSLContext> sslCtx,
   }
 
   if (defaultFallback) {
-    contexts.defaultCtxDomainName = *cn;
+    setDefaultCtxDomainName(*cn, &contexts);
   }
 
-  contexts.ctxs.emplace_back(sslCtx);
+  addServerContext(sslCtx, &contexts);
 }
 
 void
-SSLContextManager::insertSSLCtxByDomainName(const char* dn,
-                                            size_t len,
+SSLContextManager::insertSSLCtxByDomainName(const std::string& dn,
                                             shared_ptr<SSLContext> sslCtx,
                                             SslContexts& contexts,
                                             CertCrypto certCrypto) {
   try {
-    insertSSLCtxByDomainNameImpl(dn, len, sslCtx, contexts, certCrypto);
+    insertSSLCtxByDomainNameImpl(dn, sslCtx, contexts, certCrypto);
   } catch (const std::runtime_error& ex) {
     if (strict_) {
       throw ex;
@@ -680,42 +744,44 @@ SSLContextManager::insertSSLCtxByDomainName(const char* dn,
   }
 }
 void
-SSLContextManager::insertSSLCtxByDomainNameImpl(const char* dn,
-                                                size_t len,
+SSLContextManager::insertSSLCtxByDomainNameImpl(const std::string& dn,
                                                 shared_ptr<SSLContext> sslCtx,
                                                 SslContexts& contexts,
                                                 CertCrypto certCrypto)
 {
+  const char* dn_ptr = dn.c_str();
+  size_t len = dn.length();
+
   VLOG(4) <<
     folly::stringPrintf("Adding CN/Subject-alternative-name \"%s\" for "
-                        "SNI search", dn);
+                        "SNI search", dn_ptr);
 
   // Only support wildcard domains which are prefixed exactly by "*." .
   // "*" appearing at other locations is not accepted.
 
-  if (len > 2 && dn[0] == '*') {
-    if (dn[1] == '.') {
+  if (len > 2 && dn_ptr[0] == '*') {
+    if (dn_ptr[1] == '.') {
       // skip the first '*'
-      dn++;
+      dn_ptr++;
       len--;
     } else {
       throw std::runtime_error(
-        "Invalid wildcard CN/subject-alternative-name \"" + std::string(dn) + "\" "
+        "Invalid wildcard CN/subject-alternative-name \"" + dn + "\" "
         "(only allow character \".\" after \"*\"");
     }
   }
 
-  if (len == 1 && *dn == '.') {
+  if (len == 1 && *dn_ptr == '.') {
     throw std::runtime_error("X509 has only '.' in the CN or subject alternative name "
                     "(after removing any preceding '*')");
   }
 
-  if (strchr(dn, '*')) {
+  if (strchr(dn_ptr, '*')) {
     throw std::runtime_error("X509 has '*' in the the CN or subject alternative name "
                     "(after removing any preceding '*')");
   }
 
-  DNString dnstr(dn, len);
+  DNString dnstr(dn_ptr, len);
   insertIntoDnMap(SSLContextKey(dnstr, certCrypto), sslCtx, true, contexts);
   if (certCrypto != CertCrypto::BEST_AVAILABLE) {
     // Note: there's no partial ordering here (you either get what you request,

@@ -16,11 +16,11 @@
 #include <wangle/util/FilePoller.h>
 
 #include <atomic>
-#include <sys/stat.h>
 
 #include <folly/Conv.h>
 #include <folly/Memory.h>
 #include <folly/Singleton.h>
+#include <sys/stat.h>
 
 using namespace folly;
 
@@ -148,8 +148,28 @@ FilePoller::FileModificationData FilePoller::getFileModData(
   struct stat info;
   int ret = stat(path.c_str(), &info);
   if (ret != 0) {
-    return FileModificationData{false, 0};
+    return FileModificationData{false, std::chrono::system_clock::time_point()};
   }
-  return FileModificationData{true, info.st_mtime};
+
+  auto system_time = std::chrono::system_clock::from_time_t(info.st_mtime);
+
+  // On posix systems we can improve granularity by adding in the
+  // nanoseconds portion of the mtime
+#ifndef _WIN32
+  auto& mtim =
+#if defined(__APPLE__) || defined(__FreeBSD__) \
+ || (defined(__NetBSD__) && (__NetBSD_Version__ < 6099000000))
+      info.st_mtimespec
+#else
+      info.st_mtim
+#endif
+      ;
+
+  system_time +=
+      std::chrono::duration_cast<std::chrono::system_clock::duration>(
+                         std::chrono::nanoseconds(mtim.tv_nsec));
+#endif
+
+  return FileModificationData{true, system_time};
 }
 }

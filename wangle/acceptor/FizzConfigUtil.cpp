@@ -29,18 +29,22 @@ using fizz::server::ClientAuthMode;
 
 namespace wangle {
 
-namespace {
-std::unique_ptr<fizz::server::CertManager> createCertManager(
-    const ServerSocketConfig& config) {
+std::unique_ptr<fizz::server::CertManager>
+FizzConfigUtil::createCertManager(const ServerSocketConfig& config) {
   auto certMgr = std::make_unique<fizz::server::CertManager>();
   auto loadedCert = false;
   for (const auto& sslConfig : config.sslContextConfigs) {
     for (const auto& cert : sslConfig.certificates) {
       try {
-        auto x509Chain = FizzUtil::readChainFile(cert.certPath);
-        auto pkey = FizzUtil::readPrivateKey(cert.keyPath, cert.passwordPath);
-        auto selfCert =
+        std::unique_ptr<fizz::SelfCert> selfCert;
+        if (cert.isBuffer) {
+          selfCert = CertUtils::makeSelfCert(cert.certPath, cert.keyPath);
+        } else {
+          auto x509Chain = FizzUtil::readChainFile(cert.certPath);
+          auto pkey = FizzUtil::readPrivateKey(cert.keyPath, cert.passwordPath);
+          selfCert =
             CertUtils::makeSelfCert(std::move(x509Chain), std::move(pkey));
+        }
         certMgr->addCert(std::move(selfCert), sslConfig.isDefault);
         loadedCert = true;
       } catch (const std::runtime_error& ex) {
@@ -61,28 +65,17 @@ std::unique_ptr<fizz::server::CertManager> createCertManager(
   }
   return certMgr;
 }
-} // namespace
 
 std::shared_ptr<fizz::server::FizzServerContext>
-FizzConfigUtil::createFizzContext(
-    const ServerSocketConfig& config,
-    std::unique_ptr<fizz::server::CertManager> certMgr) {
+FizzConfigUtil::createFizzContext(const ServerSocketConfig& config) {
   if (config.sslContextConfigs.empty()) {
     return nullptr;
   }
-  if (!certMgr) {
-    certMgr = createCertManager(config);
-    if (!certMgr) {
-      return nullptr;
-    }
-  }
-
   auto ctx = std::make_shared<fizz::server::FizzServerContext>();
   ctx->setSupportedVersions({ProtocolVersion::tls_1_3,
                              ProtocolVersion::tls_1_3_28,
                              ProtocolVersion::tls_1_3_26});
   ctx->setVersionFallbackEnabled(true);
-  ctx->setCertManager(std::move(certMgr));
 
   // Fizz does not yet support randomized next protocols so we use the highest
   // weighted list on the first context.
@@ -105,9 +98,19 @@ FizzConfigUtil::createFizzContext(
 
   auto caFile = config.sslContextConfigs.front().clientCAFile;
   if (!caFile.empty()) {
-    auto verifier = DefaultCertificateVerifier::createFromCAFile(
-        VerificationContext::Server, caFile);
-    ctx->setClientCertVerifier(std::move(verifier));
+    try {
+      auto verifier = DefaultCertificateVerifier::createFromCAFile(
+          VerificationContext::Server, caFile);
+      ctx->setClientCertVerifier(std::move(verifier));
+    } catch (const std::runtime_error& ex) {
+      auto msg = folly::sformat(" Failed to load ca file at {}", caFile);
+      if (config.strictSSL) {
+        throw std::runtime_error(ex.what() + msg);
+      } else {
+        LOG(ERROR) << msg << ex.what();
+        return nullptr;
+      }
+    }
   }
 
   return ctx;

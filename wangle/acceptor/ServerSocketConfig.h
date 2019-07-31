@@ -15,10 +15,12 @@
  */
 #pragma once
 
+
 #include <wangle/ssl/SSLCacheOptions.h>
 #include <wangle/ssl/SSLContextConfig.h>
 #include <wangle/ssl/TLSTicketKeySeeds.h>
 #include <wangle/ssl/SSLUtil.h>
+#include <wangle/acceptor/FizzConfig.h>
 #include <wangle/acceptor/SocketOptions.h>
 
 #include <boost/optional.hpp>
@@ -80,6 +82,15 @@ struct ServerSocketConfig {
   }
 
   /**
+   * This should only be called from the evb thread.
+   */
+  void updateSSLContextConfigs(
+    std::vector<SSLContextConfig> newConfigs) const {
+    sslContextConfigs = newConfigs;
+  }
+
+
+  /**
    * The name of this acceptor; used for stats/reporting purposes.
    */
   std::string name;
@@ -112,7 +123,10 @@ struct ServerSocketConfig {
   /**
    * Options for controlling the SSL cache.
    */
-  SSLCacheOptions sslCacheOptions{std::chrono::seconds(0), 20480, 200};
+  SSLCacheOptions sslCacheOptions{std::chrono::hours(1),
+                                  20480,
+                                  200,
+                                  std::chrono::hours(72)};
 
   /**
    * Determines whether or not to allow insecure connections over a secure
@@ -129,7 +143,7 @@ struct ServerSocketConfig {
   /**
    * The configs for all the SSL_CTX for use by this Acceptor.
    */
-  std::vector<SSLContextConfig> sslContextConfigs;
+  mutable std::vector<SSLContextConfig> sslContextConfigs;
 
   /**
    * Determines if the Acceptor does strict checking when loading the SSL
@@ -154,6 +168,13 @@ struct ServerSocketConfig {
    * Limit on size of queue of TFO requests by clients.
    */
   uint32_t fastOpenQueueSize{100};
+
+  /**
+   * Configures the initial setting for maxReadsPerEvent on accepted sockets.
+   */
+  uint32_t socketMaxReadsPerEvent{16};
+
+  FizzConfig fizzConfig;
 
  private:
   folly::AsyncSocket::OptionMap socketOptions_;

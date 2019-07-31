@@ -51,27 +51,29 @@ void ObservingHandler<T, R, P>::transportActive(Context* ctx) {
 
   auto deleted = deleted_;
   broadcastPool_->getHandler(routingData_)
-      .then(
-           [this, pipeline, deleted](BroadcastHandler<T, R>* broadcastHandler) {
-             if (*deleted) {
-               return;
-             }
+      .thenValue(
+          [this, pipeline, deleted](BroadcastHandler<T, R>* broadcastHandler) {
+            if (*deleted) {
+              return;
+            }
 
-             broadcastHandler_ = broadcastHandler;
-             subscriptionId_ = broadcastHandler_->subscribe(this);
-             VLOG(10) << "Subscribed to a broadcast";
+            broadcastHandler_ = broadcastHandler;
+            subscriptionId_ = broadcastHandler_->subscribe(this);
+            VLOG(10) << "Subscribed to a broadcast";
 
-             // Resume ingress
-             pipeline->transportActive();
-           })
-      .onError([this, ctx, deleted](const std::exception& ex) {
-        if (*deleted) {
-          return;
-        }
+            // Resume ingress
+            pipeline->transportActive();
+          })
+      .thenError(
+          folly::tag_t<std::exception>{},
+          [this, ctx, deleted](const std::exception& ex) {
+            if (*deleted) {
+              return;
+            }
 
-        LOG(ERROR) << "Error subscribing to a broadcast: " << ex.what();
-        this->close(ctx);
-      });
+            LOG(ERROR) << "Error subscribing to a broadcast: " << ex.what();
+            this->close(ctx);
+          });
 }
 
 template <typename T, typename R, typename P>
@@ -91,8 +93,9 @@ template <typename T, typename R, typename P>
 void ObservingHandler<T, R, P>::onNext(const T& data) {
   auto ctx = this->getContext();
   auto deleted = deleted_;
-  this->write(ctx, data)
-      .onError([this, ctx, deleted](const std::exception& ex) {
+  this->write(ctx, data).thenError(
+      folly::tag_t<std::exception>{},
+      [this, ctx, deleted](const std::exception& ex) {
         if (*deleted) {
           return;
         }

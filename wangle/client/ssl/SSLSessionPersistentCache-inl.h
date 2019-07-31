@@ -30,14 +30,14 @@ SSLSessionPersistentCacheBase<K>::SSLSessionPersistentCacheBase(
   persistentCache_(cache),
   timeUtil_(new TimeUtil()) {}
 
-template<typename K>
+template <typename K>
 SSLSessionPersistentCacheBase<K>::SSLSessionPersistentCacheBase(
-  const std::string& filename,
-  const std::size_t cacheCapacity,
-  const std::chrono::seconds& syncInterval) :
-    SSLSessionPersistentCacheBase(
-      std::make_shared<FilePersistentCache<K, SSLSessionCacheData>>(
-        filename, cacheCapacity, syncInterval)) {}
+    const std::string& filename,
+    PersistentCacheConfig config)
+    : SSLSessionPersistentCacheBase(
+          std::make_shared<FilePersistentCache<K, SSLSessionCacheData>>(
+              filename,
+              std::move(config))) {}
 
 template<typename K>
 void SSLSessionPersistentCacheBase<K>::setSSLSession(

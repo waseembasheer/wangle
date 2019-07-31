@@ -38,7 +38,7 @@ BroadcastPool<T, R, P>::BroadcastManager::getHandler() {
   connectStarted_ = true;
 
   broadcastPool_->serverPool_->connect(client_.get(), routingData_)
-      .then([this](DefaultPipeline* pipeline) {
+      .thenValue([this](DefaultPipeline* pipeline) {
         DestructorGuard dg(this);
         pipeline->setPipelineManager(this);
 
@@ -68,7 +68,9 @@ BroadcastPool<T, R, P>::BroadcastManager::getHandler() {
         // connections are not leaked.
         handler->closeIfIdle();
       })
-      .onError([this](const std::exception& ex) { handleConnectError(ex); });
+      .thenError(
+          folly::tag_t<std::exception>{},
+          [this](const std::exception& ex) { handleConnectError(ex); });
 
   return future;
 }

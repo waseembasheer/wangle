@@ -122,6 +122,12 @@ class SSLContextManager {
     const folly::SocketAddress& vipAddress,
     const std::shared_ptr<SSLCacheProvider> &externalCache);
 
+
+  /**
+   * Remove ssl context exactly matching given key.
+   */
+  void removeSSLContextConfig(const SSLContextKey& key);
+
   /**
    * Clears all ssl contexts
    */
@@ -171,11 +177,16 @@ class SSLContextManager {
   }
 
  protected:
-  virtual void loadCertKeyPairExternal(
+  virtual void loadCertKeyPairsInSSLContext(
     const std::shared_ptr<folly::SSLContext>&,
     const SSLContextConfig&,
-    const std::string& /* certificateFile */) {
-    LOG(FATAL) << "Unsupported in base SSLContextManager";
+    std::string& commonName);
+
+  virtual void loadCertKeyPairsInSSLContextExternal(
+    const std::shared_ptr<folly::SSLContext>&,
+    const SSLContextConfig&,
+    std::string& /* commonName */) {
+      LOG(FATAL) << "Unsupported in base SSLContextManager";
   }
 
   virtual void overrideConfiguration(
@@ -189,19 +200,35 @@ class SSLContextManager {
    * Insert a SSLContext by domain name.
    */
   void insertSSLCtxByDomainName(
-    const char* dn,
-    size_t len,
+    const std::string& dn,
     std::shared_ptr<folly::SSLContext> sslCtx,
     SslContexts& contexts,
     CertCrypto certCrypto = CertCrypto::BEST_AVAILABLE);
 
   void insertSSLCtxByDomainName(
-    const char* dn,
-    size_t len,
+    const std::string& dn,
     std::shared_ptr<folly::SSLContext> sslCtx,
     CertCrypto certCrypto = CertCrypto::BEST_AVAILABLE) {
-    insertSSLCtxByDomainName(dn, len, sslCtx, contexts_, certCrypto);
+    insertSSLCtxByDomainName(dn, sslCtx, contexts_, certCrypto);
   }
+
+  void loadCertsFromFiles(
+    const std::shared_ptr<folly::SSLContext>& sslCtx,
+    const SSLContextConfig::CertificateInfo& cert);
+
+  void verifyCertNames(
+    const std::shared_ptr<folly::SSLContext>& sslCtx,
+    const std::string& description,
+    std::string& commonName,
+    std::unique_ptr<std::list<std::string>>& subjectAltName,
+    const std::string& lastCertPath,
+    bool firstCert);
+
+  void setDefaultCtxDomainName(const std::string& name,
+                               SslContexts* contexts = nullptr);
+
+  void addServerContext(std::shared_ptr<ServerSSLContext> sslCtx,
+                        SslContexts* contexts = nullptr);
 
  private:
   SSLContextManager(const SSLContextManager&) = delete;
@@ -248,8 +275,7 @@ class SSLContextManager {
     SslContexts& contexts);
 
   void insertSSLCtxByDomainNameImpl(
-    const char* dn,
-    size_t len,
+    const std::string& dn,
     std::shared_ptr<folly::SSLContext> sslCtx,
     SslContexts& contexts,
     CertCrypto certCrypto);
@@ -262,7 +288,6 @@ class SSLContextManager {
   SslContexts contexts_;
   folly::EventBase* eventBase_;
   ClientHelloExtStats* clientHelloTLSExtStats_{nullptr};
-  SSLContextConfig::SNINoMatchFn noMatchFn_;
   bool strict_{true};
   std::unique_ptr<ClientCertVerifyCallback> clientCertVerifyCallback_{nullptr};
 };
