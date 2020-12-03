@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -31,7 +31,7 @@ class ClientDispatcherBase : public HandlerAdapter<Resp, Req>
     if (pipeline_) {
       try {
         pipeline_->remove(this).finalize();
-      } catch (const std::invalid_argument& e) {
+      } catch (const std::invalid_argument&) {
         // not in pipeline; this is fine
       }
     }
@@ -40,7 +40,7 @@ class ClientDispatcherBase : public HandlerAdapter<Resp, Req>
   void setPipeline(Pipeline* pipeline) {
     try {
       pipeline->template remove<ClientDispatcherBase>();
-    } catch (const std::invalid_argument& e) {
+    } catch (const std::invalid_argument&) {
       // no existing dispatcher; this is fine
     }
     pipeline_ = pipeline;

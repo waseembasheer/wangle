@@ -1,11 +1,11 @@
 /*
- * Copyright 2018-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -76,7 +76,7 @@ class EchoHandler : public HandlerAdapter<std::string> {
 class EchoPipelineFactory : public PipelineFactory<EchoPipeline> {
  public:
   EchoPipeline::Ptr newPipeline(
-      std::shared_ptr<AsyncTransportWrapper> sock) override {
+      std::shared_ptr<AsyncTransport> sock) override {
     auto pipeline = EchoPipeline::create();
     pipeline->addBack(AsyncSocketHandler(sock));
     pipeline->addBack(
@@ -92,7 +92,7 @@ class EchoPipelineFactory : public PipelineFactory<EchoPipeline> {
 class EchoClientBootstrap : public ClientBootstrap<EchoPipeline> {
  public:
   void makePipeline(
-      std::shared_ptr<folly::AsyncTransportWrapper> socket) override {
+      std::shared_ptr<folly::AsyncTransport> socket) override {
     auto sslSock = socket->getUnderlyingTransport<AsyncSSLSocket>();
     if (sslSock) {
       sslSock->setSessionKey(SESSION_KEY);
@@ -146,12 +146,7 @@ int main(int argc, char** argv) {
     // attach the context to the cache
     if (cache) {
       wangle::SSLSessionCallbacks::attachCallbacksToContext(
-        ctx->getSSLCtx(), cache.get());
-      auto session = cache->getSSLSession(SESSION_KEY);
-      if (session) {
-        VLOG(0) << "Reusing session";
-        client.sslSession(session.release());
-      }
+        ctx.get(), cache.get());
     }
     client.sslContext(ctx);
   }

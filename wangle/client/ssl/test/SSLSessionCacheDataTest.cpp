@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,12 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <chrono>
 #include <vector>
 
 #include <folly/DynamicConverter.h>
 #include <folly/portability/GTest.h>
-#include <wangle/client/ssl/SSLSession.h>
+#include <folly/ssl/OpenSSLPtrTypes.h>
 #include <wangle/client/ssl/SSLSessionCacheData.h>
 #include <wangle/client/ssl/SSLSessionCacheUtils.h>
 #include <wangle/client/ssl/test/TestUtil.h>
@@ -27,9 +28,8 @@
 using namespace std::chrono;
 using namespace testing;
 using namespace wangle;
+using folly::ssl::SSLSessionUniquePtr;
 
-using SSLCtxDeleter = folly::static_function_deleter<SSL_CTX, &SSL_CTX_free>;
-using SSLCtxPtr = std::unique_ptr<SSL_CTX, SSLCtxDeleter>;
 
 class SSLSessionCacheDataTest : public Test {
  public:
@@ -64,13 +64,13 @@ TEST_F(SSLSessionCacheDataTest, Basic) {
 
 TEST_F(SSLSessionCacheDataTest, CloneSSLSession) {
   for (auto& it : sessions_) {
-    auto sess = SSLSessionPtr(cloneSSLSession(it.first));
+    auto sess = SSLSessionUniquePtr(cloneSSLSession(it.first));
     EXPECT_TRUE(sess);
   }
 }
 
 TEST_F(SSLSessionCacheDataTest, ServiceIdentity) {
-  auto sessionPtr = SSLSessionPtr(cloneSSLSession(sessions_[0].first));
+  auto sessionPtr = SSLSessionUniquePtr(cloneSSLSession(sessions_[0].first));
   auto session = sessionPtr.get();
   auto ident = getSessionServiceIdentity(session);
   EXPECT_FALSE(ident);
@@ -81,7 +81,7 @@ TEST_F(SSLSessionCacheDataTest, ServiceIdentity) {
   EXPECT_TRUE(ident);
   EXPECT_EQ(ident.value(), id);
 
-  auto cloned = SSLSessionPtr(cloneSSLSession(session));
+  auto cloned = SSLSessionUniquePtr(cloneSSLSession(session));
   EXPECT_TRUE(cloned);
   ident = getSessionServiceIdentity(cloned.get());
   EXPECT_TRUE(ident);
@@ -92,7 +92,7 @@ TEST_F(SSLSessionCacheDataTest, ServiceIdentity) {
   auto& cacheData = cacheDataOpt.value();
   EXPECT_EQ(id, cacheData.serviceIdentity);
 
-  auto deserialized = SSLSessionPtr(getSessionFromCacheData(cacheData));
+  auto deserialized = SSLSessionUniquePtr(getSessionFromCacheData(cacheData));
   EXPECT_TRUE(deserialized);
   ident = getSessionServiceIdentity(deserialized.get());
   EXPECT_TRUE(ident);

@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -64,7 +64,7 @@ TEST_F(FileRegionTest, Basic) {
   FileRegion fileRegion(fd, 0, count);
   auto f = fileRegion.transferTo(socket);
   try {
-    f.getVia(&evb);
+    std::move(f).getVia(&evb);
   } catch (std::exception& e) {
     LOG(FATAL) << exceptionStr(e);
   }
@@ -95,8 +95,8 @@ TEST_F(FileRegionTest, Repeated) {
   for (int i = 0; i < sendCount; i++) {
     fs.push_back(fileRegion.transferTo(socket));
   }
-  auto f = collect(fs);
-  ASSERT_NO_THROW(f.getVia(&evb));
+  auto f = collect(fs).via(&evb);
+  ASSERT_NO_THROW(std::move(f).getVia(&evb));
 
   // Let the reads run to completion
   socket->shutdownWrite();

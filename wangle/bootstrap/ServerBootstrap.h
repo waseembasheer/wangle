@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -139,9 +139,12 @@ class ServerBootstrap {
       workerFactory_ = std::make_shared<ServerWorkerPool>(
         acceptorFactory_, io_group.get(), sockets_, socketFactory_);
     } else {
+      auto acceptorFactory = std::make_shared<ServerAcceptorFactory<Pipeline>>(
+            acceptPipelineFactory_, childPipelineFactory_, accConfig_);
+      acceptorFactory->enableSharedSSLContext(useSharedSSLContextManager_);
+      sharedSSLContextManager_ = acceptorFactory->getSharedSSLContextManager();
       workerFactory_ = std::make_shared<ServerWorkerPool>(
-          std::make_shared<ServerAcceptorFactory<Pipeline>>(
-              acceptPipelineFactory_, childPipelineFactory_, accConfig_),
+          acceptorFactory,
           io_group.get(),
           sockets_,
           socketFactory_);
@@ -175,6 +178,9 @@ class ServerBootstrap {
         accConfig_.maxNumPendingConnectionsPerWorker);
 
     folly::via(acceptor_group_.get(), [&] {
+      if (useZeroCopy_) {
+        socket->setZeroCopy(true);
+      }
       socket->attachEventBase(folly::EventBaseManager::get()->getEventBase());
       socket->listen(socketConfig.acceptBacklog);
       socket->startAccepting();
@@ -213,7 +219,7 @@ class ServerBootstrap {
       group(nullptr);
     }
 
-    bool reusePort = reusePort_ || (acceptor_group_->numThreads() > 1);
+    bool reusePort = reusePort_ || (acceptor_group_->numThreads() > 1)  || accConfig_.reusePort;
 
     std::mutex sock_lock;
     std::vector<std::shared_ptr<folly::AsyncSocketBase>> new_sockets;
@@ -295,10 +301,11 @@ class ServerBootstrap {
   }
 
   void waitForStop() {
-    if (!stopped_) {
-      CHECK(stopBaton_);
+    if (stopBaton_) {
       stopBaton_->wait();
+      stopBaton_.reset();
     }
+    CHECK(stopped_);
   }
 
   /*
@@ -307,6 +314,10 @@ class ServerBootstrap {
   const std::vector<std::shared_ptr<folly::AsyncSocketBase>>&
   getSockets() const {
     return *sockets_;
+  }
+
+  std::shared_ptr<SharedSSLContextManager> getSharedSSLContextManager() const {
+    return sharedSSLContextManager_;
   }
 
   std::shared_ptr<folly::IOThreadPoolExecutor> getIOGroup() const {
@@ -328,12 +339,19 @@ class ServerBootstrap {
     return this;
   }
 
+  ServerBootstrap* setUseSharedSSLContextManager(bool enabled) {
+    useSharedSSLContextManager_ = enabled;
+    return this;
+  }
+
  private:
   std::shared_ptr<folly::IOThreadPoolExecutor> acceptor_group_;
   std::shared_ptr<folly::IOThreadPoolExecutor> io_group_;
+  std::shared_ptr<SharedSSLContextManager> sharedSSLContextManager_;
 
   std::shared_ptr<ServerWorkerPool> workerFactory_;
-  std::shared_ptr<std::vector<std::shared_ptr<folly::AsyncSocketBase>>> sockets_{
+  std::shared_ptr<std::vector<std::shared_ptr<folly::AsyncSocketBase>>>
+    sockets_{
     std::make_shared<std::vector<std::shared_ptr<folly::AsyncSocketBase>>>()};
 
   std::shared_ptr<AcceptorFactory> acceptorFactory_;
@@ -341,7 +359,7 @@ class ServerBootstrap {
   std::shared_ptr<AcceptPipelineFactory> acceptPipelineFactory_{
       std::make_shared<DefaultAcceptPipelineFactory>()};
   std::shared_ptr<ServerSocketFactory> socketFactory_{
-    std::make_shared<AsyncServerSocketFactory>()};
+      std::make_shared<AsyncServerSocketFactory>()};
 
   ServerSocketConfig accConfig_;
 
@@ -350,6 +368,8 @@ class ServerBootstrap {
   std::unique_ptr<folly::Baton<>> stopBaton_{
     std::make_unique<folly::Baton<>>()};
   bool stopped_{false};
+  bool useZeroCopy_{false};
+  bool useSharedSSLContextManager_{false};
 };
 
 } // namespace wangle

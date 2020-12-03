@@ -1,11 +1,11 @@
 /*
- * Copyright 2018-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -23,14 +23,14 @@ using fizz::CertUtils;
 using fizz::DefaultCertificateVerifier;
 using fizz::FizzUtil;
 using fizz::ProtocolVersion;
-using fizz::PskKeyExchangeMode;
 using fizz::VerificationContext;
 using fizz::server::ClientAuthMode;
 
 namespace wangle {
 
-std::unique_ptr<fizz::server::CertManager>
-FizzConfigUtil::createCertManager(const ServerSocketConfig& config) {
+std::unique_ptr<fizz::server::CertManager> FizzConfigUtil::createCertManager(
+    const ServerSocketConfig& config,
+    const std::shared_ptr<PasswordInFileFactory>& pwFactory) {
   auto certMgr = std::make_unique<fizz::server::CertManager>();
   auto loadedCert = false;
   for (const auto& sslConfig : config.sslContextConfigs) {
@@ -41,7 +41,14 @@ FizzConfigUtil::createCertManager(const ServerSocketConfig& config) {
           selfCert = CertUtils::makeSelfCert(cert.certPath, cert.keyPath);
         } else {
           auto x509Chain = FizzUtil::readChainFile(cert.certPath);
-          auto pkey = FizzUtil::readPrivateKey(cert.keyPath, cert.passwordPath);
+          std::shared_ptr<folly::PasswordInFile> pw;
+          if (pwFactory) {
+            pw = pwFactory->getPasswordCollector(cert.passwordPath);
+          } else {
+            pw = std::make_shared<folly::PasswordInFile>(cert.passwordPath);
+          }
+
+          auto pkey = FizzUtil::readPrivateKey(cert.keyPath, pw);
           selfCert =
             CertUtils::makeSelfCert(std::move(x509Chain), std::move(pkey));
         }

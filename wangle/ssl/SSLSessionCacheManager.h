@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
 #include <wangle/ssl/SSLCacheProvider.h>
@@ -137,6 +138,9 @@ class SSLSessionCacheManager {
   SSLSessionCacheManager& operator=(const SSLSessionCacheManager&) = delete;
 
  private:
+  struct ContextSessionCallbacks : public folly::SSLContext::SessionLifecycleCallbacks {
+    void onNewSession(SSL* ssl, folly::ssl::SSLSessionUniquePtr sessionPtr) override;
+  };
 
   folly::SSLContext* ctx_;
   std::shared_ptr<ShardedLocalSSLSessionCache> localCache_;
@@ -146,7 +150,7 @@ class SSLSessionCacheManager {
   /**
    * Invoked by openssl when a new SSL session is created
    */
-  int newSession(SSL* ssl, SSL_SESSION* session);
+  void newSession(SSL* ssl, SSL_SESSION* session);
 
   /**
    * Invoked by openssl when an SSL session is ejected from its internal cache.
@@ -178,7 +182,6 @@ class SSLSessionCacheManager {
    * static functions registered as callbacks to openssl via
    * SSL_CTX_sess_set_new/get/remove_cb
    */
-  static int newSessionCallback(SSL* ssl, SSL_SESSION* session);
   static void removeSessionCallback(SSL_CTX* ctx, SSL_SESSION* session);
 
 #if FOLLY_OPENSSL_IS_110

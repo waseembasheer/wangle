@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -43,17 +43,19 @@ class RpcService : public Service<Bonk, Xtruct> {
  public:
   Future<Xtruct> operator()(Bonk request) override {
     // Oh no, we got Bonked!  Quick, Bonk back
-    printf("Bonk: %s, %i\n", request.message.c_str(), request.type);
+    printf(
+        "Bonk: %s, %i\n", request.message_ref()->c_str(), *request.type_ref());
 
     /* sleep override: ignore lint
      * useful for testing dispatcher behavior by hand
      */
     // Wait for a bit
-    return futures::sleepUnsafe(std::chrono::seconds(request.type))
+    return futures::sleepUnsafe(std::chrono::seconds(*request.type_ref()))
         .thenValue([request](auto&&) {
           Xtruct response;
-          response.string_thing = "Stop saying " + request.message + "!";
-          response.i32_thing = request.type;
+          *response.string_thing_ref() =
+              "Stop saying " + *request.message_ref() + "!";
+          *response.i32_thing_ref() = *request.type_ref();
           return response;
         });
   }
@@ -62,7 +64,7 @@ class RpcService : public Service<Bonk, Xtruct> {
 class RpcPipelineFactory : public PipelineFactory<SerializePipeline> {
  public:
   SerializePipeline::Ptr newPipeline(
-      std::shared_ptr<AsyncTransportWrapper> sock) override {
+      std::shared_ptr<AsyncTransport> sock) override {
     auto pipeline = SerializePipeline::create();
     pipeline->addBack(AsyncSocketHandler(sock));
     // ensure we can write from any thread

@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <wangle/ssl/TLSCredProcessor.h>
 
 #include <folly/dynamic.h>
@@ -122,13 +123,13 @@ void TLSCredProcessor::certFileUpdated() noexcept {
     const folly::Optional<std::string>& password) {
   try {
     std::string jsonData;
-    if (password.hasValue()) {
+    if (password.has_value()) {
       auto wrappedData = SSLUtil::decryptOpenSSLEncFilePassString(
           fileName,
           password.value(),
           EVP_aes_256_cbc(),
           EVP_sha256());
-      if (wrappedData.hasValue()) {
+      if (wrappedData.has_value()) {
         jsonData = wrappedData.value();
       } else {
         LOG(WARNING) << "Failed to read " << fileName
@@ -160,7 +161,7 @@ void TLSCredProcessor::certFileUpdated() noexcept {
       insertSeeds(conf["new"], seedData.newSeeds);
     }
     return seedData;
-  } catch (const std::exception& ex) {
+  } catch (const std::exception&) {
     // Don't log ex.what() since it may contain contents of the key file.
     LOG(WARNING) << "Parsing " << fileName << " failed.";
     return folly::none;

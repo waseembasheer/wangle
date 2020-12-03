@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <wangle/ssl/SSLContextManager.h>
 
 #include <wangle/ssl/ClientHelloExtStats.h>
@@ -28,6 +29,7 @@
 #include <folly/ScopeGuard.h>
 #include <folly/String.h>
 #include <folly/portability/OpenSSL.h>
+#include <folly/ssl/OpenSSLCertUtils.h>
 #include <functional>
 
 
@@ -44,7 +46,6 @@ using folly::SSLContext;
 using std::string;
 using std::shared_ptr;
 // Get OpenSSL portability APIs
-using namespace folly::ssl;
 
 /**
  * SSLContextManager helps to create and manage all SSL_CTX,
@@ -179,34 +180,211 @@ std::string flattenList(const std::list<std::string>& list) {
   }
   return s;
 }
+
+enum class CertIdentitySource {
+  None,
+  CommonName,
+  DistinguishedName,
+};
+using CertIdentityResult =
+    std::pair<folly::Optional<std::string>, CertIdentitySource>;
+
+CertIdentityResult getCertIdentity(X509& x) {
+  auto cn = folly::ssl::OpenSSLCertUtils::getCommonName(x);
+  if (cn.has_value()) {
+    return std::make_pair(
+        std::move(cn).value(), CertIdentitySource::CommonName);
+  }
+  auto dn = folly::ssl::OpenSSLCertUtils::getSubject(x);
+  if (dn.has_value()) {
+    return std::make_pair(
+        std::move(dn).value(), CertIdentitySource::DistinguishedName);
+  }
+  return std::make_pair(folly::none, CertIdentitySource::None);
 }
+} // namespace
+
+class SSLContextManager::SslContexts
+    : public std::enable_shared_from_this<SSLContextManager::SslContexts> {
+ public:
+  static std::shared_ptr<SslContexts> create(bool strict);
+  void clear();
+  void swap(SslContexts& other) noexcept;
+
+  /**
+   * These APIs are largely the internal implementations within SslContexts
+   * corresponding to various public APIs or lookups needed internally.
+   *
+   * For details regarding their arguments, see public API in the header.
+   */
+  void addSSLContextConfig(
+      const SSLContextConfig& ctxConfig,
+      const SSLCacheOptions& cacheOptions,
+      const TLSTicketKeySeeds* ticketSeeds,
+      const folly::SocketAddress& vipAddress,
+      const std::shared_ptr<SSLCacheProvider>& externalCache,
+      const SSLContextManager* mgr,
+      std::shared_ptr<ServerSSLContext>& newDefault);
+
+  void removeSSLContextConfigByDomainName(const std::string& domainName);
+  void removeSSLContextConfig(const SSLContextKey& key);
+
+  std::shared_ptr<folly::SSLContext> getDefaultSSLCtx() const;
+
+  // Similar to the getSSLCtx functions below, but indicates if the key
+  // is present in the defaults vector instead of returning a context
+  // from the map.
+  bool isDefaultCtx(const SSLContextKey& key) const;
+  bool isDefaultCtxExact(const SSLContextKey& key) const;
+  bool isDefaultCtxSuffix(const SSLContextKey& key) const;
+
+  std::shared_ptr<folly::SSLContext> getSSLCtx(const SSLContextKey& key) const;
+
+  std::shared_ptr<folly::SSLContext> getSSLCtxBySuffix(
+      const SSLContextKey& key) const;
+
+  std::shared_ptr<folly::SSLContext> getSSLCtxByExactDomain(
+      const SSLContextKey& key) const;
+
+  void insertSSLCtxByDomainName(
+      const std::string& dn,
+      std::shared_ptr<folly::SSLContext> sslCtx,
+      CertCrypto certCrypto,
+      bool defaultFallback);
+
+  void addServerContext(std::shared_ptr<ServerSSLContext> sslCtx);
+
+  // Does feature-specific setup for OpenSSL
+  void ctxSetupByOpensslFeature(
+      std::shared_ptr<ServerSSLContext> sslCtx,
+      const SSLContextConfig& ctxConfig,
+      ClientHelloExtStats* stats,
+      std::shared_ptr<ServerSSLContext>& newDefault);
+
+  void reloadTLSTicketKeys(
+      const std::vector<std::string>& oldSeeds,
+      const std::vector<std::string>& currentSeeds,
+      const std::vector<std::string>& newSeeds);
+
+  void setThreadExternalCache(
+      const std::shared_ptr<SSLCacheProvider>& externalCache);
+
+  // Fetches ticket keys for use during reloads. Assumes all VIPs share seeds
+  // (as many places do) and returns the first seeds it finds.
+  TLSTicketKeySeeds getTicketKeys() const;
+
+  const std::string& getDefaultCtxDomainName() const {
+    return defaultCtxDomainName_;
+  }
+
+  /**
+   * Callback function from openssl to find the right X509 to
+   * use during SSL handshake
+   */
+#if FOLLY_OPENSSL_HAS_SNI
+  static folly::SSLContext::ServerNameCallbackResult serverNameCallback(
+      SSL* ssl,
+      ClientHelloExtStats* stats,
+      const std::shared_ptr<SslContexts>& contexts);
+#endif
+
+ private:
+  SslContexts(bool strict);
+
+  /**
+   * The following functions help to maintain the data structure for
+   * domain name matching in SNI.  Some notes:
+   *
+   * 1. It is a best match.
+   *
+   * 2. It allows wildcard CN and wildcard subject alternative name in a X509.
+   *    The wildcard name must be _prefixed_ by '*.'.  It errors out whenever
+   *    it sees '*' in any other locations.
+   *
+   * 3. It uses one std::unordered_map<DomainName, SSL_CTX> object to
+   *    do this.  For wildcard name like "*.facebook.com", ".facebook.com"
+   *    is used as the key.
+   *
+   * 4. After getting tlsext_hostname from the client hello message, it
+   *    will do a full string search first and then try one level up to
+   *    match any wildcard name (if any) in the X509.
+   *    [Note, browser also only looks one level up when matching the
+   * requesting domain name with the wildcard name in the server X509].
+   */
+
+  void insert(std::shared_ptr<ServerSSLContext> sslCtx, bool defaultFallback);
+
+  void insertSSLCtxByDomainNameImpl(
+      const std::string& dn,
+      std::shared_ptr<folly::SSLContext> sslCtx,
+      CertCrypto certCrypto,
+      bool defaultFallback);
+
+  void insertIntoDnMap(
+      SSLContextKey key,
+      std::shared_ptr<folly::SSLContext> sslCtx,
+      bool overwrite);
+
+  void insertIntoDefaultKeys(SSLContextKey key, bool overwrite);
+
+  std::vector<std::shared_ptr<ServerSSLContext>> ctxs_;
+  std::vector<SSLContextKey> defaultCtxKeys_;
+  std::string defaultCtxDomainName_;
+  bool strict_{true};
+
+  /**
+   * Container to store the (DomainName -> SSL_CTX) mapping
+   */
+  std::unordered_map<
+      SSLContextKey,
+      std::shared_ptr<folly::SSLContext>,
+      SSLContextKeyHash>
+      dnMap_;
+};
 
 SSLContextManager::~SSLContextManager() = default;
 
 SSLContextManager::SSLContextManager(
-  folly::EventBase* eventBase,
-  const std::string& vipName,
-  bool strict,
-  SSLStats* stats) :
-    vipName_(vipName),
-    stats_(stats),
-    eventBase_(eventBase),
-    strict_(strict) {
+    const std::string& vipName,
+    bool strict,
+    SSLStats* stats)
+    : vipName_(vipName),
+      stats_(stats),
+      contexts_(SslContexts::create(strict)),
+      strict_(strict) {}
 
+SSLContextManager::SslContexts::SslContexts(bool strict) : strict_(strict) {}
+
+/*static*/ std::shared_ptr<SSLContextManager::SslContexts>
+SSLContextManager::SslContexts::create(bool strict) {
+  return std::shared_ptr<SslContexts>(new SslContexts(strict));
 }
 
 void SSLContextManager::SslContexts::swap(SslContexts& other) noexcept {
-  ctxs.swap(other.ctxs);
-  defaultCtx.swap(other.defaultCtx);
-  defaultCtxDomainName.swap(other.defaultCtxDomainName);
-  dnMap.swap(other.dnMap);
+  ctxs_.swap(other.ctxs_);
+  defaultCtxKeys_.swap(other.defaultCtxKeys_);
+  dnMap_.swap(other.dnMap_);
 }
 
 void SSLContextManager::SslContexts::clear() {
-  ctxs.clear();
-  defaultCtx = nullptr;
-  defaultCtxDomainName.clear();
-  dnMap.clear();
+  ctxs_.clear();
+  defaultCtxKeys_.clear();
+  dnMap_.clear();
+}
+
+TLSTicketKeySeeds SSLContextManager::SslContexts::getTicketKeys() const {
+  TLSTicketKeySeeds seeds;
+  // This assumes that all ctxs have the same ticket seeds. Which we assume in
+  // other places as well
+  for (auto& ctx : ctxs_) {
+    auto ticketManager = ctx->getTicketManager();
+    if (ticketManager) {
+      ticketManager->getTLSTicketKeySeeds(
+          seeds.oldSeeds, seeds.currentSeeds, seeds.newSeeds);
+      break;
+    }
+  }
+  return seeds;
 }
 
 void SSLContextManager::resetSSLContextConfigs(
@@ -215,42 +393,53 @@ void SSLContextManager::resetSSLContextConfigs(
   const TLSTicketKeySeeds* ticketSeeds,
   const folly::SocketAddress& vipAddress,
   const std::shared_ptr<SSLCacheProvider>& externalCache) {
-
-  SslContexts contexts;
+  auto contexts = SslContexts::create(strict_);
+  std::shared_ptr<ServerSSLContext> defaultCtx;
   TLSTicketKeySeeds oldTicketSeeds;
-  // This assumes that all ctxs have the same ticket seeds. Which we assume in
-  // other places as well
   if (!ticketSeeds) {
-    // find first non null ticket manager and update seeds from it
-    for (auto& ctx : contexts_.ctxs) {
-      auto ticketManager = ctx->getTicketManager();
-      if (ticketManager) {
-        ticketManager->getTLSTicketKeySeeds(
+    // Read from default context if there, otherwise from one of
+    // the others.
+    if (defaultCtx_ && defaultCtx_->getTicketManager()) {
+      defaultCtx_->getTicketManager()->getTLSTicketKeySeeds(
           oldTicketSeeds.oldSeeds,
           oldTicketSeeds.currentSeeds,
           oldTicketSeeds.newSeeds);
-        break;
-      }
+    } else {
+      oldTicketSeeds = contexts_->getTicketKeys();
     }
   }
 
   for (const auto& ctxConfig : ctxConfigs) {
-    addSSLContextConfig(ctxConfig,
-                        cacheOptions,
-                        ticketSeeds ? ticketSeeds : &oldTicketSeeds,
-                        vipAddress,
-                        externalCache,
-                        &contexts);
+    contexts->addSSLContextConfig(
+        ctxConfig,
+        cacheOptions,
+        ticketSeeds ? ticketSeeds : &oldTicketSeeds,
+        vipAddress,
+        externalCache,
+        this,
+        defaultCtx);
   }
   contexts_.swap(contexts);
+  defaultCtx_.swap(defaultCtx);
 }
 
-void SSLContextManager::removeSSLContextConfig(const SSLContextKey& key) {
-  // The default context can't be dropped.
-  DNString defaultName(contexts_.defaultCtxDomainName.data(),
-                       contexts_.defaultCtxDomainName.length());
+void SSLContextManager::SslContexts::removeSSLContextConfigByDomainName(
+    const std::string& domainName) {
+  // Corresponding to insertSSLCtxByDomainNameImpl, we need to skip the wildcard
+  // to form the key.
+  folly::StringPiece dn(domainName);
+  if (dn.startsWith("*.")) {
+    dn.advance(1);
+  }
+  SSLContextKey key(DNString(dn.data(), dn.size()));
+  removeSSLContextConfig(key);
+}
 
-  if (key.dnString == defaultName) {
+void SSLContextManager::SslContexts::removeSSLContextConfig(
+    const SSLContextKey& key) {
+  // The default context can't be dropped.
+  if (std::find(defaultCtxKeys_.begin(), defaultCtxKeys_.end(), key) !=
+      defaultCtxKeys_.end()) {
     string msg = folly::to<string>("Cert for the default domain ",
                                    key.dnString.c_str(),
                                    " can not be removed");
@@ -258,39 +447,43 @@ void SSLContextManager::removeSSLContextConfig(const SSLContextKey& key) {
     throw std::invalid_argument(msg);
   }
 
-  auto mapIt = contexts_.dnMap.find(key);
-  if (mapIt != contexts_.dnMap.end()) {
-    auto vIt = std::find(contexts_.ctxs.begin(),
-                         contexts_.ctxs.end(),
-                         mapIt->second);
-    CHECK(vIt != contexts_.ctxs.end());
-    contexts_.ctxs.erase(vIt);
-    contexts_.dnMap.erase(mapIt);
+  auto mapIt = dnMap_.find(key);
+  if (mapIt != dnMap_.end()) {
+    auto vIt = std::find(ctxs_.begin(), ctxs_.end(), mapIt->second);
+    CHECK(vIt != ctxs_.end());
+    ctxs_.erase(vIt);
+    dnMap_.erase(mapIt);
   }
 }
 
-void SSLContextManager::addSSLContextConfig(
-  const SSLContextConfig& ctxConfig,
-  const SSLCacheOptions& cacheOptions,
-  const TLSTicketKeySeeds* ticketSeeds,
-  const folly::SocketAddress& vipAddress,
-  const std::shared_ptr<SSLCacheProvider>& externalCache,
-  SslContexts* contexts) {
-
-  if (!contexts) {
-    contexts = &contexts_;
-  }
-
+void SSLContextManager::SslContexts::addSSLContextConfig(
+    const SSLContextConfig& ctxConfig,
+    const SSLCacheOptions& cacheOptions,
+    const TLSTicketKeySeeds* ticketSeeds,
+    const folly::SocketAddress& vipAddress,
+    const std::shared_ptr<SSLCacheProvider>& externalCache,
+    const SSLContextManager* mgr,
+    std::shared_ptr<ServerSSLContext>& newDefault) {
   auto sslCtx =
       std::make_shared<ServerSSLContext>(ctxConfig.sslVersion);
 
   std::string commonName;
+  bool loaded;
   if (ctxConfig.offloadDisabled) {
-    loadCertKeyPairsInSSLContext(sslCtx, ctxConfig, commonName);
+    loaded = mgr->loadCertKeyPairsInSSLContext(sslCtx, ctxConfig, commonName);
   } else {
-    loadCertKeyPairsInSSLContextExternal(sslCtx, ctxConfig, commonName);
+    loaded = mgr->loadCertKeyPairsInSSLContextExternal(
+        sslCtx, ctxConfig, commonName);
   }
-  overrideConfiguration(sslCtx, ctxConfig);
+
+  if (!loaded) {
+    // No compatible contexts were loaded.
+    VLOG(3) << "Context with CN=" << commonName
+            << " loaded no certs, skipping...";
+    return;
+  }
+
+  mgr->overrideConfiguration(sslCtx, ctxConfig);
 
   // Let the server pick the highest performing cipher from among the client's
   // choices.
@@ -309,6 +502,10 @@ void SSLContextManager::addSSLContextConfig(
   // since we test their validity by actually setting them.
   sslCtx->ciphers(ctxConfig.sslCiphers);
 
+  if (ctxConfig.sigAlgs) {
+    sslCtx->setSigAlgsOrThrow(*ctxConfig.sigAlgs);
+  }
+
   // Use a fix DH param
   DH* dh = get_dh2048();
   SSL_CTX_set_tmp_dh(sslCtx->getSSLCtx(), dh);
@@ -326,10 +523,10 @@ void SSLContextManager::addSSLContextConfig(
 
       // Only allow over-riding of verification callback if one
       // isn't explicitly set on the context
-      if (clientCertVerifyCallback_ == nullptr) {
+      if (mgr->clientCertVerifyCallback_ == nullptr) {
         sslCtx->setVerificationOption(ctxConfig.clientVerification);
       } else {
-        clientCertVerifyCallback_->attachSSLContext(sslCtx);
+        mgr->clientCertVerifyCallback_->attachSSLContext(sslCtx);
       }
 
     } catch (const std::exception& ex) {
@@ -347,39 +544,33 @@ void SSLContextManager::addSSLContextConfig(
   if (ctxConfig.sessionContext && !ctxConfig.sessionContext->empty()) {
     sessionIdContext = *ctxConfig.sessionContext;
   }
-  VLOG(2) << "For vip " << vipName_
-          << ", setting sid_ctx " << sessionIdContext;
+  VLOG(3) << "For vip " << mgr->vipName_ << ", setting sid_ctx "
+          << sessionIdContext;
   sslCtx->setSessionCacheContext(sessionIdContext);
 
   sslCtx->setupSessionCache(
-      ctxConfig,
-      cacheOptions,
-      externalCache,
-      sessionIdContext,
-      stats_);
-  sslCtx->setupTicketManager(ticketSeeds, ctxConfig, stats_);
-  VLOG(2) << "On VipID=" << vipAddress.describe() << " context=" << sslCtx;
+      ctxConfig, cacheOptions, externalCache, sessionIdContext, mgr->stats_);
+  sslCtx->setupTicketManager(ticketSeeds, ctxConfig, mgr->stats_);
+  VLOG(3) << "On VipID=" << vipAddress.describe() << " context=" << sslCtx;
 
   // finalize sslCtx setup by the individual features supported by openssl
-  ctxSetupByOpensslFeature(sslCtx, ctxConfig, *contexts);
+  ctxSetupByOpensslFeature(
+      sslCtx, ctxConfig, mgr->clientHelloTLSExtStats_, newDefault);
 
   try {
-    insert(sslCtx,
-           ctxConfig.isDefault,
-           *contexts);
+    insert(sslCtx, ctxConfig.isDefault);
   } catch (const std::exception& ex) {
     string msg = folly::to<string>("Error adding certificate : ",
                                    folly::exceptionStr(ex));
     LOG(ERROR) << msg;
     throw std::runtime_error(msg);
   }
-
 }
 
-void SSLContextManager::loadCertKeyPairsInSSLContext(
+bool SSLContextManager::loadCertKeyPairsInSSLContext(
     const std::shared_ptr<folly::SSLContext>& sslCtx,
     const SSLContextConfig& ctxConfig,
-    std::string& commonName) {
+    std::string& commonName) const {
   unsigned numCerts = 0;
   std::string lastCertPath;
   std::unique_ptr<std::list<std::string>> subjectAltName;
@@ -401,18 +592,25 @@ void SSLContextManager::loadCertKeyPairsInSSLContext(
                     (numCerts == 1));
     lastCertPath = cert.certPath;
   }
+
+  return true;
 }
 
 void SSLContextManager::loadCertsFromFiles(
     const std::shared_ptr<folly::SSLContext>& sslCtx,
-    const SSLContextConfig::CertificateInfo& cert) {
+    const SSLContextConfig::CertificateInfo& cert) const {
   try {
     // The private key lives in the same process
     // This needs to be called before loadPrivateKey().
     if (!cert.passwordPath.empty()) {
-      auto sslPassword = std::make_shared<folly::PasswordInFile>(
-          cert.passwordPath);
-      sslCtx->passwordCollector(std::move(sslPassword));
+      if (passwordFactory_) {
+        sslCtx->passwordCollector(
+            passwordFactory_->getPasswordCollector(cert.passwordPath));
+      } else {
+        auto sslPassword =
+            std::make_shared<folly::PasswordInFile>(cert.passwordPath);
+        sslCtx->passwordCollector(std::move(sslPassword));
+      }
     }
     sslCtx->loadCertKeyPairFromFiles(
       cert.certPath.c_str(),
@@ -431,12 +629,12 @@ void SSLContextManager::loadCertsFromFiles(
 }
 
 void SSLContextManager::verifyCertNames(
-  const std::shared_ptr<folly::SSLContext>& sslCtx,
-  const std::string& description,
-  std::string& commonName,
-  std::unique_ptr<std::list<std::string>>& subjectAltName,
-  const std::string& lastCertPath,
-  bool firstCert) {
+    const std::shared_ptr<folly::SSLContext>& sslCtx,
+    const std::string& description,
+    std::string& groupIdentity,
+    std::unique_ptr<std::list<std::string>>& subjectAltName,
+    const std::string& lastCertPath,
+    bool firstCert) const {
   X509* x509 = getX509(sslCtx->getSSLCtx());
   if (!x509) {
     throw std::runtime_error(
@@ -444,26 +642,27 @@ void SSLContextManager::verifyCertNames(
             "Certificate: ", description, " is invalid"));
   }
   auto guard = folly::makeGuard([x509] { X509_free(x509); });
-  auto cn = SSLUtil::getCommonName(x509);
-  if (!cn) {
-    throw std::runtime_error(folly::to<string>("Cannot get CN for X509 ",
+  auto identityResult = getCertIdentity(*x509);
+  auto& identity = identityResult.first;
+  if (!identity) {
+    throw std::runtime_error(folly::to<string>("Cannot get identity for X509 ",
                                                description));
   }
   auto altName = SSLUtil::getSubjectAltName(x509);
-  VLOG(2) << "cert " << description << " CN: " << *cn;
+  VLOG(3) << "cert " << description << " Identity: " << *identity;
   if (altName) {
     altName->sort();
-    VLOG(2) << "cert " << description << " SAN: " << flattenList(*altName);
+    VLOG(3) << "cert " << description << " SAN: " << flattenList(*altName);
   } else {
-    VLOG(2) << "cert " << description << " SAN: " << "{none}";
+    VLOG(3) << "cert " << description << " SAN: " << "{none}";
   }
   if (firstCert) {
-    commonName = *cn;
+    groupIdentity = *identity;
     subjectAltName = std::move(altName);
   } else {
-    if (commonName != *cn) {
+    if (groupIdentity != *identity) {
       throw std::runtime_error(folly::to<string>("X509 ", description,
-                                        " does not have same CN as ",
+                                        " does not have same identity as ",
                                         lastCertPath));
     }
     if (altName == nullptr) {
@@ -482,36 +681,29 @@ void SSLContextManager::verifyCertNames(
   }
 }
 
-void SSLContextManager::setDefaultCtxDomainName(
-    const std::string& name,
-    SslContexts* contexts) {
-  contexts = contexts ? contexts : &contexts_;
-  contexts->defaultCtxDomainName = name;
+void SSLContextManager::SslContexts::addServerContext(
+    std::shared_ptr<ServerSSLContext> sslCtx) {
+  ctxs_.emplace_back(sslCtx);
 }
 
-void SSLContextManager::addServerContext(
-    std::shared_ptr<ServerSSLContext> sslCtx,
-    SslContexts* contexts) {
-  contexts = contexts ? contexts : &contexts_;
-  contexts->ctxs.emplace_back(sslCtx);
-}
-
-
-#ifdef PROXYGEN_HAVE_SERVERNAMECALLBACK
-SSLContext::ServerNameCallbackResult
-SSLContextManager::serverNameCallback(SSL* ssl) {
+#if FOLLY_OPENSSL_HAS_SNI
+/*static*/ SSLContext::ServerNameCallbackResult
+SSLContextManager::SslContexts::serverNameCallback(
+    SSL* ssl,
+    ClientHelloExtStats* stats,
+    const std::shared_ptr<SslContexts>& contexts) {
   shared_ptr<SSLContext> ctx;
 
   const char* sn = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
   bool reqHasServerName = true;
   if (!sn) {
     VLOG(6) << "Server Name (tlsext_hostname) is missing, using default";
-    if (clientHelloTLSExtStats_) {
-      clientHelloTLSExtStats_->recordAbsentHostname();
+    if (stats) {
+      stats->recordAbsentHostname();
     }
     reqHasServerName = false;
 
-    sn = contexts_.defaultCtxDomainName.c_str();
+    sn = contexts->getDefaultCtxDomainName().c_str();
   }
   size_t snLen = strlen(sn);
   VLOG(6) << "Server Name (SNI TLS extension): '" << sn << "' ";
@@ -548,14 +740,16 @@ SSLContextManager::serverNameCallback(SSL* ssl) {
   // be in the map as best available if it is the best we have for that
   // subject name.
   SSLContextKey key(dnstr, certCryptoReq);
-  ctx = getSSLCtx(key);
+  ctx = contexts->getSSLCtx(key);
   if (ctx) {
     sslSocket->switchServerSSLContext(ctx);
-    if (clientHelloTLSExtStats_) {
+  }
+  if (ctx || contexts->isDefaultCtx(key)) {
+    if (stats) {
       if (reqHasServerName) {
-        clientHelloTLSExtStats_->recordMatch();
+        stats->recordMatch();
       }
-      clientHelloTLSExtStats_->recordCertCrypto(certCryptoReq, certCryptoReq);
+      stats->recordCertCrypto(certCryptoReq, certCryptoReq);
     }
     return SSLContext::SERVER_NAME_FOUND;
   }
@@ -563,15 +757,16 @@ SSLContextManager::serverNameCallback(SSL* ssl) {
   // If we didn't find an exact match, look for a cert with upgraded crypto.
   if (certCryptoReq != CertCrypto::BEST_AVAILABLE) {
     SSLContextKey fallbackKey(dnstr, CertCrypto::BEST_AVAILABLE);
-    ctx = getSSLCtx(fallbackKey);
+    ctx = contexts->getSSLCtx(fallbackKey);
     if (ctx) {
       sslSocket->switchServerSSLContext(ctx);
-      if (clientHelloTLSExtStats_) {
+    }
+    if (ctx || contexts->isDefaultCtx(fallbackKey)) {
+      if (stats) {
         if (reqHasServerName) {
-          clientHelloTLSExtStats_->recordMatch();
+          stats->recordMatch();
         }
-        clientHelloTLSExtStats_->recordCertCrypto(
-            certCryptoReq, CertCrypto::BEST_AVAILABLE);
+        stats->recordCertCrypto(certCryptoReq, CertCrypto::BEST_AVAILABLE);
       }
       return SSLContext::SERVER_NAME_FOUND;
     }
@@ -579,19 +774,19 @@ SSLContextManager::serverNameCallback(SSL* ssl) {
 
   VLOG(6) << folly::stringPrintf("Cannot find a SSL_CTX for \"%s\"", sn);
 
-  if (clientHelloTLSExtStats_ && reqHasServerName) {
-    clientHelloTLSExtStats_->recordNotMatch();
+  if (stats && reqHasServerName) {
+    stats->recordNotMatch();
   }
   return SSLContext::SERVER_NAME_NOT_FOUND;
 }
 #endif
 
 // Consolidate all SSL_CTX setup which depends on openssl version/feature
-void
-SSLContextManager::ctxSetupByOpensslFeature(
-  shared_ptr<ServerSSLContext> sslCtx,
-  const SSLContextConfig& ctxConfig,
-  SslContexts& contexts) {
+void SSLContextManager::SslContexts::ctxSetupByOpensslFeature(
+    shared_ptr<ServerSSLContext> sslCtx,
+    const SSLContextConfig& ctxConfig,
+    ClientHelloExtStats* stats,
+    std::shared_ptr<ServerSSLContext>& newDefault) {
   // Disable compression - profiling shows this to be very expensive in
   // terms of CPU and memory consumption.
   //
@@ -629,21 +824,29 @@ SSLContextManager::ctxSetupByOpensslFeature(
   }
 
   // SNI
-#ifdef PROXYGEN_HAVE_SERVERNAMECALLBACK
+#if FOLLY_OPENSSL_HAS_SNI
   if (ctxConfig.isDefault) {
-    if (contexts.defaultCtx) {
-      throw std::runtime_error(">1 X509 is set as default");
+    if (newDefault) {
+      throw std::runtime_error("More than 1 X509 is set as default");
     }
 
-    contexts.defaultCtx = sslCtx;
-    contexts.defaultCtx->setServerNameCallback(
-      std::bind(&SSLContextManager::serverNameCallback, this,
-                std::placeholders::_1));
+    newDefault = sslCtx;
+    newDefault->setServerNameCallback(
+        [stats, contexts = shared_from_this()](SSL* ssl) {
+          return serverNameCallback(ssl, stats, contexts);
+        });
   }
 #else
-  if (contexts.ctxs.size() > 1) {
+  // without SNI support, we expect only a single cert. set it as default and
+  // error if we go to another.
+  if (newDefault) {
     OPENSSL_MISSING_FEATURE(SNI);
   }
+
+  newDefault = sslCtx;
+
+  // Silence unused parameter warning
+  (stats);
 #endif
 #ifdef SSL_OP_NO_RENEGOTIATION
   // Disable renegotiation at the OpenSSL layer
@@ -651,18 +854,21 @@ SSLContextManager::ctxSetupByOpensslFeature(
 #endif
 }
 
-void
-SSLContextManager::insert(shared_ptr<ServerSSLContext> sslCtx,
-                          bool defaultFallback,
-                          SslContexts& contexts) {
+void SSLContextManager::SslContexts::insert(
+    shared_ptr<ServerSSLContext> sslCtx,
+    bool defaultFallback) {
   X509* x509 = getX509(sslCtx->getSSLCtx());
   if (!x509) {
     throw std::runtime_error("SSLCtx is invalid");
   }
   auto guard = folly::makeGuard([x509] { X509_free(x509); });
-  auto cn = SSLUtil::getCommonName(x509);
-  if (!cn) {
-    throw std::runtime_error("Cannot get CN");
+
+  auto identityResult = getCertIdentity(*x509);
+  auto& identity = identityResult.first;
+  auto identitySource = identityResult.second;
+
+  if (!identity) {
+    throw std::runtime_error("Cannot get certificate identity");
   }
 
   /**
@@ -685,11 +891,11 @@ SSLContextManager::insert(shared_ptr<ServerSSLContext> sslCtx,
   // Not sure if we ever get this kind of X509...
   // If we do, assume '*' is always in the CN and ignore all subject alternative
   // names.
-  if (cn->length() == 1 && (*cn)[0] == '*') {
+  if (identitySource == CertIdentitySource::CommonName &&
+      identity->length() == 1 && (*identity)[0] == '*') {
     if (!defaultFallback) {
       throw std::runtime_error("STAR X509 is not the default");
     }
-    contexts.ctxs.emplace_back(sslCtx);
     return;
   }
 
@@ -704,37 +910,34 @@ SSLContextManager::insert(shared_ptr<ServerSSLContext> sslCtx,
     VLOG(4) << "Adding SSLContext with best available crypto";
   }
 
-  // Insert by CN
-  insertSSLCtxByDomainName(*cn,
-                           sslCtx,
-                           contexts,
-                           certCrypto);
+  // Insert by identity.
+  //
+  // This will be used as the lookup key if this SSLContext is marked as
+  // the default.
+  insertSSLCtxByDomainName(*identity, sslCtx, certCrypto, defaultFallback);
 
   // Insert by subject alternative name(s)
   auto altNames = SSLUtil::getSubjectAltName(x509);
   if (altNames) {
     for (auto& name : *altNames) {
-      insertSSLCtxByDomainName(name,
-                               sslCtx,
-                               contexts,
-                               certCrypto);
+      insertSSLCtxByDomainName(name, sslCtx, certCrypto, defaultFallback);
     }
   }
 
   if (defaultFallback) {
-    setDefaultCtxDomainName(*cn, &contexts);
+    defaultCtxDomainName_ = *identity;
+  } else {
+    addServerContext(sslCtx);
   }
-
-  addServerContext(sslCtx, &contexts);
 }
 
-void
-SSLContextManager::insertSSLCtxByDomainName(const std::string& dn,
-                                            shared_ptr<SSLContext> sslCtx,
-                                            SslContexts& contexts,
-                                            CertCrypto certCrypto) {
+void SSLContextManager::SslContexts::insertSSLCtxByDomainName(
+    const std::string& dn,
+    shared_ptr<SSLContext> sslCtx,
+    CertCrypto certCrypto,
+    bool defaultFallback) {
   try {
-    insertSSLCtxByDomainNameImpl(dn, sslCtx, contexts, certCrypto);
+    insertSSLCtxByDomainNameImpl(dn, sslCtx, certCrypto, defaultFallback);
   } catch (const std::runtime_error& ex) {
     if (strict_) {
       throw ex;
@@ -743,12 +946,12 @@ SSLContextManager::insertSSLCtxByDomainName(const std::string& dn,
     }
   }
 }
-void
-SSLContextManager::insertSSLCtxByDomainNameImpl(const std::string& dn,
-                                                shared_ptr<SSLContext> sslCtx,
-                                                SslContexts& contexts,
-                                                CertCrypto certCrypto)
-{
+
+void SSLContextManager::SslContexts::insertSSLCtxByDomainNameImpl(
+    const std::string& dn,
+    shared_ptr<SSLContext> sslCtx,
+    CertCrypto certCrypto,
+    bool defaultFallback) {
   const char* dn_ptr = dn.c_str();
   size_t len = dn.length();
 
@@ -782,46 +985,125 @@ SSLContextManager::insertSSLCtxByDomainNameImpl(const std::string& dn,
   }
 
   DNString dnstr(dn_ptr, len);
-  insertIntoDnMap(SSLContextKey(dnstr, certCrypto), sslCtx, true, contexts);
+  auto mainKey = SSLContextKey(dnstr, certCrypto);
+  if (defaultFallback) {
+    insertIntoDefaultKeys(mainKey, true);
+  } else {
+    insertIntoDnMap(mainKey, sslCtx, true);
+  }
+
   if (certCrypto != CertCrypto::BEST_AVAILABLE) {
     // Note: there's no partial ordering here (you either get what you request,
     // or you get best available).
     VLOG(6) << "Attempting insert of weak crypto SSLContext as best available.";
-    insertIntoDnMap(
-        SSLContextKey(dnstr, CertCrypto::BEST_AVAILABLE),
-        sslCtx,
-        false,
-        contexts);
+    auto weakKey = SSLContextKey(dnstr, CertCrypto::BEST_AVAILABLE);
+    if (defaultFallback) {
+      insertIntoDefaultKeys(weakKey, false);
+    } else {
+      insertIntoDnMap(weakKey, sslCtx, false);
+    }
   }
 }
 
-void SSLContextManager::insertIntoDnMap(SSLContextKey key,
-                                        shared_ptr<SSLContext> sslCtx,
-                                        bool overwrite,
-                                        SslContexts& contexts)
-{
-  const auto v = contexts.dnMap.find(key);
-  if (v == contexts.dnMap.end()) {
+// These two are inverses of each other; if a context is in the dnmap,
+// it shouldn't be in the contextkeys vector, and vice versa.
+//
+// The default contexts are stored outside of the struct, so the
+// defaultCtxKeys_ vector contains the keys that would map to the
+// default context.
+
+void SSLContextManager::SslContexts::insertIntoDnMap(
+    SSLContextKey key,
+    shared_ptr<SSLContext> sslCtx,
+    bool overwrite) {
+  const auto v1 = dnMap_.find(key);
+  const auto v2 =
+      std::find(defaultCtxKeys_.begin(), defaultCtxKeys_.end(), key);
+  if (v1 == dnMap_.end() && v2 == defaultCtxKeys_.end()) {
     VLOG(6) << "Inserting SSLContext into map.";
-    contexts.dnMap.emplace(key, sslCtx);
-  } else if (v->second == sslCtx) {
+    dnMap_.emplace(key, sslCtx);
+  } else if (v1 != dnMap_.end()) {
+    DCHECK(v2 == defaultCtxKeys_.end());
+    if (v1->second == sslCtx) {
+      VLOG(6)
+          << "Duplicate CN or subject alternative name found in the same X509."
+             "  Ignore the later name.";
+    } else if (overwrite) {
+      VLOG(6) << "Overwriting SSLContext.";
+      v1->second = sslCtx;
+    } else {
+      VLOG(6) << "Leaving existing SSLContext in map.";
+    }
+  } else {
+    DCHECK(v2 != defaultCtxKeys_.end());
+    if (overwrite) {
+      VLOG(6) << "Overwriting SSLContext, removing from defaults.";
+      defaultCtxKeys_.erase(v2);
+      dnMap_.emplace(key, sslCtx);
+    } else {
+      VLOG(6) << "Leaving existing SSLContextKey in vector.";
+    }
+  }
+}
+
+void SSLContextManager::SslContexts::insertIntoDefaultKeys(
+    SSLContextKey key,
+    bool overwrite) {
+  const auto v1 = dnMap_.find(key);
+  const auto v2 =
+      std::find(defaultCtxKeys_.begin(), defaultCtxKeys_.end(), key);
+  if (v1 == dnMap_.end() && v2 == defaultCtxKeys_.end()) {
+    VLOG(6) << "Inserting SSLContextKey into vector.";
+    defaultCtxKeys_.emplace_back(key);
+  } else if (v1 != dnMap_.end()) {
+    DCHECK(v2 == defaultCtxKeys_.end());
+    if (overwrite) {
+      VLOG(6) << "SSLContextKey reassigned to default";
+      dnMap_.erase(v1);
+      defaultCtxKeys_.emplace_back(key);
+    } else {
+      VLOG(6) << "Leaving existing SSLContext in map.";
+    }
+  } else {
+    DCHECK(v2 != defaultCtxKeys_.end());
     VLOG(6)<< "Duplicate CN or subject alternative name found in the same X509."
       "  Ignore the later name.";
-  } else if (overwrite) {
-    VLOG(6) << "Overwriting SSLContext.";
-    v->second = sslCtx;
-  } else {
-    VLOG(6) << "Leaving existing SSLContext in map.";
   }
 }
 
 void SSLContextManager::clear() {
-  contexts_.clear();
+  contexts_->clear();
 }
 
-shared_ptr<SSLContext>
-SSLContextManager::getSSLCtx(const SSLContextKey& key) const
-{
+bool SSLContextManager::SslContexts::isDefaultCtx(
+    const SSLContextKey& key) const {
+  return isDefaultCtxExact(key) || isDefaultCtxSuffix(key);
+}
+
+bool SSLContextManager::SslContexts::isDefaultCtxExact(
+    const SSLContextKey& key) const {
+  if (std::find(defaultCtxKeys_.begin(), defaultCtxKeys_.end(), key) !=
+      defaultCtxKeys_.end()) {
+    VLOG(6) << folly::stringPrintf(
+        "\"%s\" is a direct match to default", key.dnString.c_str());
+    return true;
+  }
+  return false;
+}
+
+bool SSLContextManager::SslContexts::isDefaultCtxSuffix(
+    const SSLContextKey& key) const {
+  size_t dot;
+  if ((dot = key.dnString.find_first_of(".")) != DNString::npos) {
+    SSLContextKey suffixKey(DNString(key.dnString, dot), key.certCrypto);
+    return isDefaultCtxExact(suffixKey);
+  }
+
+  return false;
+}
+
+shared_ptr<SSLContext> SSLContextManager::SslContexts::getSSLCtx(
+    const SSLContextKey& key) const {
   auto ctx = getSSLCtxByExactDomain(key);
   if (ctx) {
     return ctx;
@@ -829,16 +1111,15 @@ SSLContextManager::getSSLCtx(const SSLContextKey& key) const
   return getSSLCtxBySuffix(key);
 }
 
-shared_ptr<SSLContext>
-SSLContextManager::getSSLCtxBySuffix(const SSLContextKey& key) const
-{
+shared_ptr<SSLContext> SSLContextManager::SslContexts::getSSLCtxBySuffix(
+    const SSLContextKey& key) const {
   size_t dot;
 
   if ((dot = key.dnString.find_first_of(".")) != DNString::npos) {
     SSLContextKey suffixKey(DNString(key.dnString, dot),
         key.certCrypto);
-    const auto v = contexts_.dnMap.find(suffixKey);
-    if (v != contexts_.dnMap.end()) {
+    const auto v = dnMap_.find(suffixKey);
+    if (v != dnMap_.end()) {
       VLOG(6) << folly::stringPrintf("\"%s\" is a willcard match to \"%s\"",
                                      key.dnString.c_str(),
                                      suffixKey.dnString.c_str());
@@ -851,11 +1132,10 @@ SSLContextManager::getSSLCtxBySuffix(const SSLContextKey& key) const
   return shared_ptr<SSLContext>();
 }
 
-shared_ptr<SSLContext>
-SSLContextManager::getSSLCtxByExactDomain(const SSLContextKey& key) const
-{
-  const auto v = contexts_.dnMap.find(key);
-  if (v == contexts_.dnMap.end()) {
+shared_ptr<SSLContext> SSLContextManager::SslContexts::getSSLCtxByExactDomain(
+    const SSLContextKey& key) const {
+  const auto v = dnMap_.find(key);
+  if (v == dnMap_.end()) {
     VLOG(6) << folly::stringPrintf("\"%s\" is not an exact match",
                                    key.dnString.c_str());
     return shared_ptr<SSLContext>();
@@ -866,18 +1146,12 @@ SSLContextManager::getSSLCtxByExactDomain(const SSLContextKey& key) const
   }
 }
 
-shared_ptr<SSLContext>
-SSLContextManager::getDefaultSSLCtx() const{
-  return contexts_.defaultCtx;
-}
-
-void
-SSLContextManager::reloadTLSTicketKeys(
-  const std::vector<std::string>& oldSeeds,
-  const std::vector<std::string>& currentSeeds,
-  const std::vector<std::string>& newSeeds) {
+void SSLContextManager::SslContexts::reloadTLSTicketKeys(
+    const std::vector<std::string>& oldSeeds,
+    const std::vector<std::string>& currentSeeds,
+    const std::vector<std::string>& newSeeds) {
 #ifdef SSL_CTRL_SET_TLSEXT_TICKET_KEY_CB
-  for (auto& ctx : contexts_.ctxs) {
+  for (auto& ctx : ctxs_) {
     auto tmgr = ctx->getTicketManager();
     if (tmgr) {
       tmgr->setTLSTicketKeySeeds(oldSeeds, currentSeeds, newSeeds);
@@ -886,4 +1160,94 @@ SSLContextManager::reloadTLSTicketKeys(
 #endif
 }
 
+// These are thin facades over the contexts struct stored within, which
+// handles the logic.
+void SSLContextManager::addSSLContextConfig(
+    const SSLContextConfig& ctxConfig,
+    const SSLCacheOptions& cacheOptions,
+    const TLSTicketKeySeeds* ticketSeeds,
+    const folly::SocketAddress& vipAddress,
+    const std::shared_ptr<SSLCacheProvider>& externalCache) {
+  contexts_->addSSLContextConfig(
+      ctxConfig,
+      cacheOptions,
+      ticketSeeds,
+      vipAddress,
+      externalCache,
+      this,
+      defaultCtx_);
+}
+
+void SSLContextManager::removeSSLContextConfigByDomainName(
+    const std::string& domainName) {
+  contexts_->removeSSLContextConfigByDomainName(domainName);
+}
+
+void SSLContextManager::removeSSLContextConfig(const SSLContextKey& key) {
+  contexts_->removeSSLContextConfig(key);
+}
+
+std::shared_ptr<folly::SSLContext> SSLContextManager::getDefaultSSLCtx() const {
+  return defaultCtx_;
+}
+
+std::shared_ptr<folly::SSLContext> SSLContextManager::getSSLCtx(
+    const SSLContextKey& key) const {
+  if (contexts_->isDefaultCtx(key)) {
+    return defaultCtx_;
+  }
+  return contexts_->getSSLCtx(key);
+}
+
+std::shared_ptr<folly::SSLContext> SSLContextManager::getSSLCtxBySuffix(
+    const SSLContextKey& key) const {
+  if (contexts_->isDefaultCtxSuffix(key)) {
+    return defaultCtx_;
+  }
+  return contexts_->getSSLCtxBySuffix(key);
+}
+
+std::shared_ptr<folly::SSLContext> SSLContextManager::getSSLCtxByExactDomain(
+    const SSLContextKey& key) const {
+  if (contexts_->isDefaultCtxExact(key)) {
+    return defaultCtx_;
+  }
+  return contexts_->getSSLCtxByExactDomain(key);
+}
+
+void SSLContextManager::reloadTLSTicketKeys(
+    const std::vector<std::string>& oldSeeds,
+    const std::vector<std::string>& currentSeeds,
+    const std::vector<std::string>& newSeeds) {
+  contexts_->reloadTLSTicketKeys(oldSeeds, currentSeeds, newSeeds);
+  if (defaultCtx_) {
+    auto tmgr = defaultCtx_->getTicketManager();
+    if (tmgr) {
+      tmgr->setTLSTicketKeySeeds(oldSeeds, currentSeeds, newSeeds);
+    }
+  }
+}
+
+void SSLContextManager::setClientHelloExtStats(ClientHelloExtStats* stats) {
+  clientHelloTLSExtStats_ = stats;
+  if (defaultCtx_) {
+    defaultCtx_->setServerNameCallback(
+        [stats = clientHelloTLSExtStats_, contexts = contexts_](SSL* ssl) {
+          return SSLContextManager::SslContexts::serverNameCallback(ssl, stats, contexts);
+        });
+  }
+}
+
+void SSLContextManager::insertSSLCtxByDomainName(
+    const std::string& dn,
+    std::shared_ptr<folly::SSLContext> sslCtx,
+    CertCrypto certCrypto,
+    bool defaultFallback) {
+  contexts_->insertSSLCtxByDomainName(dn, sslCtx, certCrypto, defaultFallback);
+}
+
+void SSLContextManager::addServerContext(
+    std::shared_ptr<ServerSSLContext> sslCtx) {
+  contexts_->addServerContext(sslCtx);
+}
 } // namespace wangle

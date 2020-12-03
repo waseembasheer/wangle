@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include "wangle/bootstrap/ServerBootstrap.h"
 #include "wangle/bootstrap/ClientBootstrap.h"
 #include "wangle/channel/Handler.h"
@@ -23,7 +24,6 @@
 
 using namespace wangle;
 using namespace folly;
-using namespace testing;
 
 using BytesPipeline = Pipeline<IOBufQueue&, std::unique_ptr<IOBuf>>;
 using TestObsPipeline = ObservingPipeline<std::shared_ptr<folly::IOBuf>>;
@@ -44,7 +44,7 @@ struct TestRoutingData {
 class TestPipelineFactory : public PipelineFactory<BytesPipeline> {
  public:
   BytesPipeline::Ptr newPipeline(
-      std::shared_ptr<AsyncTransportWrapper> /* unused */) override {
+      std::shared_ptr<AsyncTransport> /* unused */) override {
     pipelines_++;
     auto pipeline = BytesPipeline::create();
     pipeline->addBack(new BytesToBytesHandler());
@@ -65,7 +65,7 @@ class CustomPipelineFactory
   }
 
   TestObsPipeline::Ptr newPipeline(
-      std::shared_ptr<folly::AsyncTransportWrapper> socket,
+      std::shared_ptr<folly::AsyncTransport> socket,
       const TestRoutingData& routingData,
       RoutingDataHandler<TestRoutingData>* /* unused */,
       std::shared_ptr<TransportInfo> /* unused */) override {
@@ -78,7 +78,7 @@ class CustomPipelineFactory
   }
 
   BytesPipeline::Ptr newPipeline(
-      std::shared_ptr<AsyncTransportWrapper> sock) override {
+      std::shared_ptr<AsyncTransport> sock) override {
     // Should not be called.
     ADD_FAILURE() << "Should not be called, "
                   << "this function is typically called from "
@@ -101,7 +101,7 @@ class CustomPipelineMakerTestClient : public TestClient {
   }
 
   void makePipeline(
-      std::shared_ptr<folly::AsyncTransportWrapper> socket) override {
+      std::shared_ptr<folly::AsyncTransport> socket) override {
     setPipeline(factory_->newPipeline(
       socket, routingData_, nullptr, nullptr));
   }

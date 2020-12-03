@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -32,7 +32,7 @@ TEST(AsyncSocketHandlerTest, WriteErrOnShutdown) {
   StrictMock<MockPipelineManager> manager;
   auto pipeline = DefaultPipeline::create();
   pipeline->setPipelineManager(&manager);
-  pipeline->addBack(AsyncSocketHandler(socket)).finalize();
+  pipeline->addBack(AsyncSocketHandler(std::move(socket))).finalize();
 
   // close() the pipeline multiple times.
   // deletePipeline should only be called once.
@@ -48,7 +48,7 @@ TEST(AsyncSocketHandlerTest, TransportActiveInactive) {
   auto socket = AsyncSocket::newSocket(&evb);
   auto handler = std::make_shared<StrictMock<MockBytesToBytesHandler>>();
   auto pipeline = DefaultPipeline::create();
-  pipeline->addBack(AsyncSocketHandler(socket));
+  pipeline->addBack(AsyncSocketHandler(std::move(socket)));
   pipeline->addBack(handler);
   pipeline->finalize();
 
@@ -68,7 +68,7 @@ TEST(AsyncSocketHandlerTest, TransportActiveInactive) {
   socket = AsyncSocket::newSocket(&evb);
   handler = std::make_shared<StrictMock<MockBytesToBytesHandler>>();
   pipeline = DefaultPipeline::create();
-  pipeline->addBack(AsyncSocketHandler(socket));
+  pipeline->addBack(AsyncSocketHandler(std::move(socket)));
   pipeline->addBack(handler);
   pipeline->finalize();
 

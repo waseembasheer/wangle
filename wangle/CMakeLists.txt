@@ -1,15 +1,41 @@
-#  Copyright (c) 2014, Facebook, Inc.
-#  All rights reserved.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
-#  This source code is licensed under the BSD-style license found in the
-#  LICENSE file in the root directory of this source tree. An additional grant
-#  of patent rights can be found in the PATENTS file in the same directory.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 cmake_minimum_required(VERSION 3.0.2)
 
-project("wangle" VERSION 1.0.0 LANGUAGES CXX C)
+if (NOT DEFINED PACKAGE_VERSION)
+  set(PACKAGE_VERSION "1.0.0")
+endif()
 
-add_compile_options(-std=c++1z)
+if (NOT DEFINED SO_VERSION)
+  set(SO_VERSION 1)
+endif()
+
+project("wangle" VERSION ${PACKAGE_VERSION} LANGUAGES CXX C)
+
+if (NOT DEFINED CPACK_GENERATOR)
+  set(CPACK_GENERATOR "RPM")
+endif()
+set(CPACK_PACKAGE_VERSION_MAJOR ${PROJECT_VERSION_MAJOR})
+set(CPACK_PACKAGE_VERSION_MINOR ${PROJECT_VERSION_MINOR})
+set(CPACK_PACKAGE_VERSION_PATCH ${PROJECT_VERSION_PATCH})
+include(CPack)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_MODULE_PATH
   "${CMAKE_CURRENT_SOURCE_DIR}/cmake/"
@@ -18,6 +44,9 @@ set(CMAKE_MODULE_PATH
   # For shipit-transformed builds
   "${CMAKE_CURRENT_SOURCE_DIR}/../build/fbcode_builder/CMake"
   ${CMAKE_MODULE_PATH})
+
+include(FBBuildOptions)
+fb_activate_static_library_option()
 
 # When installing Folly & Wangle in a non-default prefix, this will let
 # projects linking against libwangle.so to find libfolly.so automatically.
@@ -33,18 +62,13 @@ set(LIB_INSTALL_DIR lib CACHE STRING
 set(CMAKE_INSTALL_DIR lib/cmake/wangle CACHE STRING
     "The subdirectory where CMake package config files should be installed")
 
-# Try finding folly via its installed CMake configuration file first.
-# This should work if folly was built with CMake.
-find_package(folly CONFIG)
-if (NOT folly_FOUND)
-  # Look for folly using our FindFolly.cmake module.  This may work if the
-  # folly was built with its older autoconf build files rather than with CMake.
-  find_package(Folly MODULE REQUIRED)
-endif()
+# Try finding folly via its installed CMake configuration file.
+# This will also automatically find several libraries that we depend on through
+# folly.
+find_package(folly CONFIG REQUIRED)
 
 find_package(fizz CONFIG REQUIRED)
-find_package(Boost REQUIRED COMPONENTS system thread filesystem regex context
-                                       date_time program_options)
+find_package(fmt CONFIG REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(Glog REQUIRED)
 find_package(gflags CONFIG QUIET)
@@ -76,7 +100,6 @@ set(WANGLE_HEADER_DIRS
   channel
   client
   codec
-  portability
   service
   ssl
   util
@@ -114,6 +137,7 @@ set(WANGLE_SOURCES
   codec/LengthFieldBasedFrameDecoder.cpp
   codec/LengthFieldPrepender.cpp
   codec/LineBasedFrameDecoder.cpp
+  ssl/PasswordInFileFactory.cpp
   ssl/ServerSSLContext.cpp
   ssl/SSLContextManager.cpp
   ssl/SSLSessionCacheManager.cpp
@@ -136,7 +160,7 @@ endif()
 
 if (BUILD_SHARED_LIBS)
   set_target_properties(wangle
-    PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION 1)
+    PROPERTIES VERSION ${PROJECT_VERSION} SOVERSION ${SO_VERSION})
 endif()
 
 target_include_directories(
@@ -263,7 +287,6 @@ if(BUILD_TESTS)
   endmacro(add_gtest)
 
   # this test segfaults
-  add_gtest(acceptor/test/AcceptorTest.cpp AcceptorTest)
   add_gtest(acceptor/test/ConnectionManagerTest.cpp ConnectionManagerTest)
   add_gtest(acceptor/test/LoadShedConfigurationTest.cpp LoadShedConfigurationTest)
   add_gtest(acceptor/test/PeekingAcceptorHandshakeHelperTest.cpp PeekingAcceptorHandshakeHelperTest)

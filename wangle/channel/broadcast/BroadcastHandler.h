@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
 #include <wangle/channel/AsyncSocketHandler.h>
@@ -104,7 +105,7 @@ class BroadcastPipelineFactory
     : public PipelineFactory<DefaultPipeline> {
  public:
   DefaultPipeline::Ptr newPipeline(
-      std::shared_ptr<folly::AsyncTransportWrapper> socket) override = 0;
+      std::shared_ptr<folly::AsyncTransport> socket) override = 0;
 
   virtual BroadcastHandler<T, R>* getBroadcastHandler(
       DefaultPipeline* pipeline) noexcept = 0;

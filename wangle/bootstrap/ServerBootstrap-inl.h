@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
 #include <folly/ExceptionWrapper.h>
@@ -22,6 +23,7 @@
 #include <folly/io/async/EventBaseManager.h>
 #include <wangle/acceptor/Acceptor.h>
 #include <wangle/acceptor/ManagedConnection.h>
+#include <wangle/acceptor/SharedSSLContextManager.h>
 #include <wangle/bootstrap/ServerSocketFactory.h>
 #include <wangle/channel/Handler.h>
 #include <wangle/channel/Pipeline.h>
@@ -40,6 +42,8 @@ class AcceptorException : public std::runtime_error {
     DROP_CONN_PCT = 5,
     FORCE_STOP = 6,
     INTERNAL_ERROR = 7,
+    ACCEPT_PAUSED = 8,
+    ACCEPT_RESUMED = 9,
   };
 
   explicit AcceptorException(ExceptionType type)
@@ -71,6 +75,9 @@ template <typename Pipeline>
 class ServerAcceptor : public Acceptor,
                        public wangle::InboundHandler<AcceptPipelineType> {
  public:
+  using OnDataAvailableParams =
+      folly::AsyncUDPSocket::ReadCallback::OnDataAvailableParams;
+
   class ServerConnection : public wangle::ManagedConnection,
                            public wangle::PipelineManager {
    public:
@@ -91,7 +98,7 @@ class ServerAcceptor : public Acceptor,
     }
     void notifyPendingShutdown() override {}
     void closeWhenIdle() override {}
-    void dropConnection() override {
+    void dropConnection(const std::string& /* errorMsg */ = "") override {
       auto ew = folly::make_exception_wrapper<AcceptorException>(
           AcceptorException::ExceptionType::DROPPED, "dropped");
       pipeline_->readException(ew);
@@ -129,8 +136,10 @@ class ServerAcceptor : public Acceptor,
   void init(
       folly::AsyncServerSocket* serverSocket,
       folly::EventBase* eventBase,
-      SSLStats* stats = nullptr) override {
-    Acceptor::init(serverSocket, eventBase, stats);
+      SSLStats* stats = nullptr,
+      std::shared_ptr<const fizz::server::FizzServerContext> fizzCtx =
+          nullptr) override {
+    Acceptor::init(serverSocket, eventBase, stats, fizzCtx);
 
     acceptPipeline_ = acceptPipelineFactory_->newPipeline(this);
 
@@ -149,7 +158,7 @@ class ServerAcceptor : public Acceptor,
     }
 
     auto connInfo = boost::get<ConnInfo&>(conn);
-    folly::AsyncTransportWrapper::UniquePtr transport(connInfo.sock);
+    folly::AsyncTransport::UniquePtr transport(connInfo.sock);
 
     // Setup local and remote addresses
     auto tInfoPtr = std::make_shared<TransportInfo>(connInfo.tinfo);
@@ -162,7 +171,7 @@ class ServerAcceptor : public Acceptor,
         std::make_shared<std::string>(connInfo.nextProtoName);
 
     auto pipeline = childPipelineFactory_->newPipeline(
-        std::shared_ptr<folly::AsyncTransportWrapper>(
+        std::shared_ptr<folly::AsyncTransport>(
             transport.release(), folly::DelayedDestruction::Destructor()));
     pipeline->setTransportInfo(tInfoPtr);
     auto connection = new ServerConnection(std::move(pipeline));
@@ -177,7 +186,7 @@ class ServerAcceptor : public Acceptor,
 
   /* See Acceptor::onNewConnection for details */
   void onNewConnection(
-      folly::AsyncTransportWrapper::UniquePtr transport,
+      folly::AsyncTransport::UniquePtr transport,
       const folly::SocketAddress* clientAddr,
       const std::string& nextProtocolName,
       SecureTransportType secureTransportType,
@@ -233,7 +242,8 @@ class ServerAcceptor : public Acceptor,
       std::shared_ptr<folly::AsyncUDPSocket> socket,
       const folly::SocketAddress& addr,
       std::unique_ptr<folly::IOBuf> buf,
-      bool /* truncated */) noexcept override {
+      bool /* truncated */,
+      OnDataAvailableParams /* params */) noexcept override {
     acceptPipeline_->read(
         AcceptPipelineType(make_tuple(buf.release(), socket, addr)));
   }
@@ -251,9 +261,11 @@ class ServerAcceptor : public Acceptor,
     Acceptor::sslConnectionError(ex);
   }
 
+ protected:
+  std::shared_ptr<AcceptPipeline> acceptPipeline_;
+
  private:
   std::shared_ptr<AcceptPipelineFactory> acceptPipelineFactory_;
-  std::shared_ptr<AcceptPipeline> acceptPipeline_;
   std::shared_ptr<PipelineFactory<Pipeline>> childPipelineFactory_;
 };
 
@@ -268,17 +280,40 @@ class ServerAcceptorFactory : public AcceptorFactory {
         childPipelineFactory_(childPipelineFactory),
         accConfig_(accConfig) {}
 
+  virtual void enableSharedSSLContext(bool enable) {
+    if (enable) {
+      sharedSSLContextManager_ =
+          std::make_shared<SharedSSLContextManagerImpl<FizzConfigUtil>>(
+              accConfig_);
+    }
+  }
+
   std::shared_ptr<Acceptor> newAcceptor(folly::EventBase* base) override {
     auto acceptor = std::make_shared<ServerAcceptor<Pipeline>>(
         acceptPipelineFactory_, childPipelineFactory_, accConfig_);
-    acceptor->init(nullptr, base, nullptr);
+
+    if (sharedSSLContextManager_) {
+      acceptor->setFizzCertManager(sharedSSLContextManager_->getCertManager());
+      acceptor->setSSLContextManager(
+          sharedSSLContextManager_->getContextManager());
+      acceptor->init(
+          nullptr, base, nullptr, sharedSSLContextManager_->getFizzContext());
+      sharedSSLContextManager_->addAcceptor(acceptor);
+    } else {
+      acceptor->init(nullptr, base, nullptr);
+    }
     return acceptor;
+  }
+
+  std::shared_ptr<SharedSSLContextManager> getSharedSSLContextManager() const {
+    return sharedSSLContextManager_;
   }
 
  private:
   std::shared_ptr<AcceptPipelineFactory> acceptPipelineFactory_;
   std::shared_ptr<PipelineFactory<Pipeline>> childPipelineFactory_;
   ServerSocketConfig accConfig_;
+  std::shared_ptr<SharedSSLContextManager> sharedSSLContextManager_;
 };
 
 class ServerWorkerPool : public folly::ThreadPoolExecutor::Observer {

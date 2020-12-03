@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,11 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
 #include <folly/io/async/AsyncSSLSocket.h>
+#include <folly/io/async/SSLContext.h>
 #include <wangle/ssl/SSLUtil.h>
-#include <wangle/client/ssl/SSLSession.h>
+#include <folly/ssl/OpenSSLPtrTypes.h>
 #include <wangle/client/ssl/SSLSessionCacheUtils.h>
 
 #include <openssl/ssl.h>
@@ -44,12 +46,12 @@ class SSLSessionCallbacks {
   // implementation must make it's own memory copy of the session data to put
   // into the cache.
   virtual void setSSLSession(
-    const std::string& identity, SSLSessionPtr session) noexcept = 0;
+    const std::string& identity, folly::ssl::SSLSessionUniquePtr session) noexcept = 0;
 
   // Return a SSL session if the cache contained session information for the
   // specified identity. It is the caller's responsibility to decrement the
   // reference count of the returned session pointer.
-  virtual SSLSessionPtr getSSLSession(
+  virtual folly::ssl::SSLSessionUniquePtr getSSLSession(
     const std::string& identity) const noexcept = 0;
 
   // Remove session data of the specified identity from cache. Return true if
@@ -72,23 +74,24 @@ class SSLSessionCallbacks {
    * Sets up SSL Session callbacks on a context.  The application is
    * responsible for detaching the callbacks from the context.
    */
-  static void attachCallbacksToContext(SSL_CTX* ctx,
+  static void attachCallbacksToContext(folly::SSLContext* context,
                                        SSLSessionCallbacks* callbacks);
 
   /**
    * Detach the passed in callbacks from the context.  If the callbacks are not
    * set on the context, it is unchanged.
    */
-  static void detachCallbacksFromContext(SSL_CTX* ctx,
+  static void detachCallbacksFromContext(folly::SSLContext* context,
                                          SSLSessionCallbacks* callbacks);
 
   static SSLSessionCallbacks* getCacheFromContext(SSL_CTX* ctx);
 
  private:
+  struct ContextSessionCallbacks : public folly::SSLContext::SessionLifecycleCallbacks {
+    void onNewSession(SSL* ssl, folly::ssl::SSLSessionUniquePtr sessionPtr) override;
+  };
 
   static std::string getSessionKeyFromSSL(SSL* ssl);
-
-  static int newSessionCallback(SSL* ssl, SSL_SESSION* session);
 
   static void removeSessionCallback(SSL_CTX* ctx, SSL_SESSION* session);
 

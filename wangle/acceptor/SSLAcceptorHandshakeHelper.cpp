@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <wangle/acceptor/SSLAcceptorHandshakeHelper.h>
 
 #include <string>
@@ -40,8 +41,8 @@ void SSLAcceptorHandshakeHelper::fillSSLTransportInfoFields(
     AsyncSSLSocket* sock, TransportInfo& tinfo) {
   tinfo.secure = true;
   tinfo.securityType = sock->getSecurityProtocol();
-  tinfo.sslSetupBytesRead = sock->getRawBytesReceived();
-  tinfo.sslSetupBytesWritten = sock->getRawBytesWritten();
+  tinfo.sslSetupBytesRead = folly::to_narrow(sock->getRawBytesReceived());
+  tinfo.sslSetupBytesWritten = folly::to_narrow(sock->getRawBytesWritten());
   tinfo.sslServerName = sock->getSSLServerName() ?
     std::make_shared<std::string>(sock->getSSLServerName()) : nullptr;
   tinfo.sslCipher = sock->getNegotiatedCipherName() ?
@@ -104,13 +105,12 @@ void SSLAcceptorHandshakeHelper::handshakeSuc(AsyncSSLSocket* sock) noexcept {
 void SSLAcceptorHandshakeHelper::handshakeErr(
     AsyncSSLSocket* sock,
     const AsyncSocketException& ex) noexcept {
-  auto elapsedTime =
-    std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - acceptTime_);
-  VLOG(3) << "SSL handshake error after " << elapsedTime.count() <<
-      " ms; " << sock->getRawBytesReceived() << " bytes received & " <<
-      sock->getRawBytesWritten() << " bytes sent: " <<
-      ex.what();
+  auto elapsedTime = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - acceptTime_);
+  VLOG(3) << "SSL handshake error with " << describeAddresses(sock) << " after "
+          << elapsedTime.count() << " ms; " << sock->getRawBytesReceived()
+          << " bytes received & " << sock->getRawBytesWritten()
+          << " bytes sent: " << ex.what();
 
   auto sslEx = folly::make_exception_wrapper<SSLException>(
       sslError_, elapsedTime, sock->getRawBytesReceived());

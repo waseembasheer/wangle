@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
 #include <folly/io/async/AsyncSSLSocket.h>
@@ -56,7 +57,7 @@ class ClientBootstrap : public BaseClientBootstrap<Pipeline>,
             dynamic_cast<AsyncSSLSocket*>(socket_.get());
           if (sslSocket && !sslSocket->getSSLSessionReused()) {
             sslSessionEstablishedCallback_->onEstablished(
-              sslSocket->getSSLSession());
+              sslSocket->getSSLSessionV2());
           }
         }
         bootstrap_->makePipeline(std::move(socket_));
@@ -115,7 +116,7 @@ class ClientBootstrap : public BaseClientBootstrap<Pipeline>,
           sslSocket->setServerName(this->sni_);
         }
         if (this->sslSession_) {
-          sslSocket->setSSLSession(this->sslSession_, true);
+          sslSocket->setSSLSessionV2(this->sslSession_);
         }
         socket = sslSocket;
       } else {
@@ -123,6 +124,7 @@ class ClientBootstrap : public BaseClientBootstrap<Pipeline>,
       }
       folly::Promise<Pipeline*> promise;
       retval = promise.getFuture();
+      DCHECK_LE(timeout.count(), std::numeric_limits<int>::max());
       socket->connect(
           new ConnectCallback(
               std::move(promise),
@@ -130,7 +132,8 @@ class ClientBootstrap : public BaseClientBootstrap<Pipeline>,
               socket,
               std::move(this->sslSessionEstablishedCallback_)),
           address,
-          timeout.count());
+          folly::to_narrow(timeout.count()),
+          BaseClientBootstrap<Pipeline>::getSocketOptions(address.getFamily()));
     });
     return retval;
   }

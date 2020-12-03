@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -35,7 +35,7 @@ typedef ClientBootstrap<BytesPipeline> TestClient;
 class TestClientPipelineFactory : public PipelineFactory<BytesPipeline> {
  public:
   BytesPipeline::Ptr newPipeline(
-      std::shared_ptr<AsyncTransportWrapper> sock) override {
+      std::shared_ptr<AsyncTransport> sock) override {
     // Socket should be connected already
     EXPECT_TRUE(sock->good());
 
@@ -54,7 +54,7 @@ class TestClientPipelineFactory : public PipelineFactory<BytesPipeline> {
 class TestPipelineFactory : public PipelineFactory<BytesPipeline> {
  public:
   BytesPipeline::Ptr newPipeline(
-      std::shared_ptr<AsyncTransportWrapper>) override {
+      std::shared_ptr<AsyncTransport>) override {
     pipelines++;
     auto pipeline = BytesPipeline::create();
     pipeline->addBack(new BytesToBytesHandler());
@@ -70,7 +70,7 @@ EventBase base_;
   TestAcceptor() : Acceptor(ServerSocketConfig()) {
     Acceptor::init(nullptr, &base_);
   }
-  void onNewConnection(AsyncTransportWrapper::UniquePtr,
+  void onNewConnection(AsyncTransport::UniquePtr,
                        const folly::SocketAddress*,
                        const std::string& /* nextProtocolName */,
                        SecureTransportType,
@@ -130,6 +130,7 @@ TEST(Bootstrap, ClientConnectionManagerTest) {
   TestServer server;
   auto factory = std::make_shared<TestPipelineFactory>();
   server.childPipeline(factory);
+  server.setUseSharedSSLContextManager(true);
   server.group(std::make_shared<IOThreadPoolExecutor>(1));
   server.bind(0);
   auto base = EventBaseManager::get()->getEventBase();
@@ -159,6 +160,7 @@ TEST(Bootstrap, ServerAcceptGroupTest) {
   TestServer server;
   auto factory = std::make_shared<TestPipelineFactory>();
   server.childPipeline(factory);
+  server.setUseSharedSSLContextManager(true);
   server.group(std::make_shared<IOThreadPoolExecutor>(1), nullptr);
   server.bind(0);
 
@@ -201,6 +203,7 @@ TEST(Bootstrap, ServerAcceptGroup2Test) {
   TestServer server;
   auto factory = std::make_shared<TestPipelineFactory>();
   server.childPipeline(factory);
+  server.setUseSharedSSLContextManager(true);
   server.group(std::make_shared<IOThreadPoolExecutor>(4), nullptr);
   server.bind(0);
 
@@ -239,6 +242,7 @@ TEST(Bootstrap, SharedThreadPool) {
   TestServer server;
   auto factory = std::make_shared<TestPipelineFactory>();
   server.childPipeline(factory);
+  server.setUseSharedSSLContextManager(true);
   server.group(pool, pool);
 
   server.bind(0);

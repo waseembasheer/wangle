@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <wangle/ssl/TLSTicketKeyManager.h>
 
 #include <folly/Random.h>
@@ -189,7 +190,7 @@ TLSTicketKeyManager::setTLSTicketKeySeeds(
   }
 
   if (ticketKeys_.size() == 0 || activeKeys_.size() == 0) {
-    LOG(WARNING) << "No keys configured, falling back to default";
+    VLOG(1) << "No keys configured, falling back to default";
     SSL_CTX_set_tlsext_ticket_key_cb(ctx_->getSSLCtx(), nullptr);
     return false;
   }
@@ -326,7 +327,7 @@ TLSTicketKeyManager::findEncryptionKey() {
   // likely only 1.
   size_t numKeys = activeKeys_.size();
   if (numKeys > 0) {
-    auto const i = numKeys == 1 ? 0ul : folly::Random::rand32(numKeys);
+    auto const i = numKeys == 1 ? 0ul : folly::Random::rand64(numKeys);
     result = activeKeys_[i];
   }
   return result;

@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
 #include <chrono>
@@ -26,6 +27,11 @@
 #include <wangle/acceptor/TransportInfo.h>
 
 namespace wangle {
+
+/**
+ * Helper to return a string of the given transport's client IP and port.
+ */
+std::string describeAddresses(const folly::AsyncTransport* transport);
 
 class Acceptor;
 
@@ -44,7 +50,7 @@ class AcceptorHandshakeHelper : public folly::DelayedDestruction {
      * If sslErr is set, Acceptor::updateSSLStats will be called.
      */
     virtual void connectionReady(
-        folly::AsyncTransportWrapper::UniquePtr transport,
+        folly::AsyncTransport::UniquePtr transport,
         std::string nextProtocol,
         SecureTransportType secureTransportType,
         folly::Optional<SSLErrorEnum> sslErr) noexcept = 0;
@@ -55,7 +61,7 @@ class AcceptorHandshakeHelper : public folly::DelayedDestruction {
      * If sslErr is set, Acceptor::updateSSLStats will be called.
      */
     virtual void connectionError(
-        folly::AsyncTransportWrapper* transport,
+        folly::AsyncTransport* transport,
         folly::exception_wrapper ex,
         folly::Optional<SSLErrorEnum> sslErr) noexcept = 0;
   };
@@ -101,7 +107,7 @@ class AcceptorHandshakeManager : public ManagedConnection,
 
   void closeWhenIdle() override {}
 
-  void dropConnection() override {
+  void dropConnection(const std::string& /* errorMsg */ = "") override {
     dropConnection(SSLErrorEnum::NO_ERROR);
   }
 
@@ -114,14 +120,14 @@ class AcceptorHandshakeManager : public ManagedConnection,
 
  protected:
   void connectionReady(
-      folly::AsyncTransportWrapper::UniquePtr transport,
+      folly::AsyncTransport::UniquePtr transport,
       std::string nextProtocol,
       SecureTransportType secureTransportType,
       folly::Optional<SSLErrorEnum>
           details) noexcept override;
 
   void connectionError(
-      folly::AsyncTransportWrapper* transport,
+      folly::AsyncTransport* transport,
       folly::exception_wrapper ex,
       folly::Optional<SSLErrorEnum>
           details) noexcept override;

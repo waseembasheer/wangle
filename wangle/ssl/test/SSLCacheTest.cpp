@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,16 +13,19 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <folly/io/async/EventBase.h>
 #include <folly/portability/GFlags.h>
 #include <iostream>
 #include <thread>
 #include <folly/io/async/AsyncSSLSocket.h>
 #include <folly/io/async/AsyncSocket.h>
+#include <folly/ssl/SSLSession.h>
 #include <vector>
 
 using namespace std;
 using namespace folly;
+using folly::ssl::SSLSession;
 
 DEFINE_int32(clients, 1, "Number of simulated SSL clients");
 DEFINE_int32(threads, 1, "Number of threads to spread clients across");
@@ -58,16 +61,14 @@ private:
   int serverIdx_;
   AsyncSocket* socket_;
   AsyncSSLSocket* sslSocket_;
-  SSL_SESSION* session_;
-  SSL_SESSION **pSess_;
+  std::shared_ptr<SSLSession> session_;
+  std::shared_ptr<SSLSession> pSess_;
   std::shared_ptr<SSLContext> ctx_;
   ClientRunner* cr_;
 
 public:
-  SSLCacheClient(EventBase* eventBase, SSL_SESSION **pSess, ClientRunner* cr);
+  SSLCacheClient(EventBase* eventBase, std::shared_ptr<SSLSession> pSess, ClientRunner* cr);
   ~SSLCacheClient() override {
-    if (session_ && !FLAGS_global)
-      SSL_SESSION_free(session_);
     if (socket_ != nullptr) {
       if (sslSocket_ != nullptr) {
         sslSocket_->destroy();
@@ -162,10 +163,10 @@ ClientRunner::run()
 {
   EventBase eb;
   std::list<SSLCacheClient *> clients;
-  SSL_SESSION* session = nullptr;
+  std::shared_ptr<SSLSession> session = nullptr;
 
   for (int i = 0; i < FLAGS_clients; i++) {
-    SSLCacheClient* c = new SSLCacheClient(&eb, &session, this);
+    SSLCacheClient* c = new SSLCacheClient(&eb, session, this);
     c->start();
     clients.push_back(c);
   }
@@ -180,7 +181,7 @@ ClientRunner::run()
 }
 
 SSLCacheClient::SSLCacheClient(EventBase* eb,
-                               SSL_SESSION **pSess,
+                               std::shared_ptr<SSLSession> pSess,
                                ClientRunner* cr)
     : eventBase_(eb),
       currReq_(0),
@@ -226,9 +227,9 @@ SSLCacheClient::connectSuccess() noexcept
 
   if (!FLAGS_handshakes) {
     if (session_ != nullptr)
-      sslSocket_->setSSLSession(session_);
+      sslSocket_->setSSLSessionV2(session_);
     else if (FLAGS_global && pSess_ != nullptr)
-      sslSocket_->setSSLSession(*pSess_);
+      sslSocket_->setSSLSessionV2(pSess_);
   }
   sslSocket_->sslConn(this);
 }
@@ -247,12 +248,9 @@ SSLCacheClient::handshakeSuc(AsyncSSLSocket*) noexcept
     cr_->hits++;
   } else {
     cr_->miss++;
-    if (session_ != nullptr) {
-      SSL_SESSION_free(session_);
-    }
-    session_ = sslSocket_->getSSLSession();
-    if (FLAGS_global && pSess_ != nullptr && *pSess_ == nullptr) {
-      *pSess_ = session_;
+    session_ = sslSocket_->getSSLSessionV2();
+    if (FLAGS_global && pSess_ != nullptr && pSess_ == nullptr) {
+      pSess_ = session_;
     }
   }
   if ( ((cr_->hits + cr_->miss) % 100) == ((100 / FLAGS_threads) * cr_->num)) {

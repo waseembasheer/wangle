@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,13 +13,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <wangle/acceptor/ConnectionManager.h>
 
 #include <folly/portability/GTest.h>
 #include <folly/portability/GMock.h>
 #include <folly/portability/GFlags.h>
 
-using namespace folly;
 using namespace testing;
 using namespace wangle;
 
@@ -63,7 +63,7 @@ class MockConnection : public ManagedConnection {
 
   MOCK_METHOD0(notifyPendingShutdown, void());
   MOCK_METHOD0(closeWhenIdle, void());
-  MOCK_METHOD0(dropConnection, void());
+  MOCK_METHOD1(dropConnection, void(const std::string&));
   MOCK_METHOD1(dumpConnectionState, void(uint8_t));
   MOCK_METHOD2(drainConnections, void(double, std::chrono::milliseconds));
 
@@ -195,8 +195,9 @@ TEST_F(ConnectionManagerTest, testDropAll) {
   InSequence enforceOrder;
 
   for (const auto& conn : conns_) {
-    EXPECT_CALL(*conn, dropConnection())
-      .WillOnce(Invoke([&] { cm_->removeConnection(conn.get()); }));
+    EXPECT_CALL(*conn, dropConnection(_))
+        .WillOnce(Invoke(
+            [&](const std::string&) { cm_->removeConnection(conn.get()); }));
   }
   cm_->dropAllConnections();
 }
@@ -205,10 +206,10 @@ TEST_F(ConnectionManagerTest, testDropPercent) {
   InSequence enforceOrder;
 
   // Make sure we have exactly 100 connections.
-  const int numToAdd = 100 - conns_.size();
+  const size_t numToAdd = 100 - conns_.size();
   addConns(numToAdd);
-  const int numToRemove = conns_.size() - 100;
-  for (int i = 0; i < numToRemove; i++) {
+  const size_t numToRemove = conns_.size() - 100;
+  for (size_t i = 0; i < numToRemove; i++) {
     removeConn(conns_.begin()->get());
   }
   EXPECT_EQ(100, cm_->getNumConnections());
@@ -218,7 +219,7 @@ TEST_F(ConnectionManagerTest, testDropPercent) {
   int numToDrop = 100 * pct;
   auto connIter = conns_.begin();
   while (connIter != conns_.end() && numToDrop > 0) {
-    EXPECT_CALL(*(*connIter), dropConnection());
+    EXPECT_CALL(*(*connIter), dropConnection(_));
     --numToDrop;
     ++connIter;
   }
@@ -232,7 +233,7 @@ TEST_F(ConnectionManagerTest, testDropPercent) {
   pct  = 0.5;
   numToDrop = 80 * pct;
   while (connIter != conns_.end() && numToDrop > 0) {
-    EXPECT_CALL(*(*connIter), dropConnection());
+    EXPECT_CALL(*(*connIter), dropConnection(_));
     --numToDrop;
     ++connIter;
   }
@@ -325,8 +326,10 @@ TEST_F(ConnectionManagerTest, testDropIdle) {
 
   // Expect the remaining idle conns to drop
   for (size_t i = 2; i < conns_.size() / 2; i++) {
-    EXPECT_CALL(*conns_[i], dropConnection())
-      .WillOnce(Invoke([this, i] { cm_->removeConnection(conns_[i].get()); }));
+    EXPECT_CALL(*conns_[i], dropConnection(_))
+        .WillOnce(Invoke([this, i](const std::string&) {
+          cm_->removeConnection(conns_[i].get());
+        }));
   }
 
   cm_->dropIdleConnections(conns_.size());

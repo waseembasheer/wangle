@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,30 +13,39 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
-
-#include <wangle/ssl/SSLCacheOptions.h>
-#include <wangle/ssl/SSLContextConfig.h>
-#include <wangle/ssl/TLSTicketKeySeeds.h>
-#include <wangle/ssl/SSLUtil.h>
 #include <wangle/acceptor/FizzConfig.h>
 #include <wangle/acceptor/SocketOptions.h>
+#include <wangle/ssl/SSLCacheOptions.h>
+#include <wangle/ssl/SSLContextConfig.h>
+#include <wangle/ssl/SSLUtil.h>
+#include <wangle/ssl/TLSTicketKeySeeds.h>
 
 #include <boost/optional.hpp>
-#include <chrono>
 #include <fcntl.h>
 #include <folly/Random.h>
 #include <folly/SocketAddress.h>
 #include <folly/String.h>
+#include <folly/io/SocketOptionMap.h>
 #include <folly/io/async/AsyncSocket.h>
 #include <folly/io/async/SSLContext.h>
-#include <list>
-#include <string>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <chrono>
+#include <list>
+#include <string>
 
 namespace wangle {
+
+/**
+ * Base class for custom configs.
+ */
+class CustomConfig {
+ public:
+  virtual ~CustomConfig() = default;
+};
 
 /**
  * Configuration for a single Acceptor.
@@ -51,24 +60,23 @@ struct ServerSocketConfig {
     uint8_t seed[32];
     folly::Random::secureRandom(seed, sizeof(seed));
     initialTicketSeeds.currentSeeds.push_back(
-      SSLUtil::hexlify(std::string((char *)seed, sizeof(seed))));
+        SSLUtil::hexlify(std::string((char*)seed, sizeof(seed))));
   }
 
-  bool isSSL() const { return !(sslContextConfigs.empty()); }
+  bool isSSL() const {
+    return !(sslContextConfigs.empty());
+  }
 
   /**
    * Set/get the socket options to apply on all downstream connections.
    */
-  void setSocketOptions(
-    const folly::AsyncSocket::OptionMap& opts) {
+  void setSocketOptions(const folly::SocketOptionMap& opts) {
     socketOptions_ = filterIPSocketOptions(opts, bindAddress.getFamily());
   }
-  folly::AsyncSocket::OptionMap&
-  getSocketOptions() {
+  folly::SocketOptionMap& getSocketOptions() {
     return socketOptions_;
   }
-  const folly::AsyncSocket::OptionMap&
-  getSocketOptions() const {
+  const folly::SocketOptionMap& getSocketOptions() const {
     return socketOptions_;
   }
 
@@ -84,11 +92,9 @@ struct ServerSocketConfig {
   /**
    * This should only be called from the evb thread.
    */
-  void updateSSLContextConfigs(
-    std::vector<SSLContextConfig> newConfigs) const {
+  void updateSSLContextConfigs(std::vector<SSLContextConfig> newConfigs) const {
     sslContextConfigs = newConfigs;
   }
-
 
   /**
    * The name of this acceptor; used for stats/reporting purposes.
@@ -165,6 +171,11 @@ struct ServerSocketConfig {
   bool enableTCPFastOpen{false};
 
   /**
+   * Use zero copy socket option
+   */
+  bool useZeroCopy{false};
+
+  /**
    * Limit on size of queue of TFO requests by clients.
    */
   uint32_t fastOpenQueueSize{100};
@@ -174,10 +185,21 @@ struct ServerSocketConfig {
    */
   uint32_t socketMaxReadsPerEvent{16};
 
+  /**
+   * Enable so-reuseport while binding the listening socket
+   */
+   bool reusePort{false};
+
   FizzConfig fizzConfig;
 
+  /**
+   * A map containing custom configs.
+   */
+  std::unordered_map<std::string, std::shared_ptr<CustomConfig>>
+      customConfigMap;
+
  private:
-  folly::AsyncSocket::OptionMap socketOptions_;
+  folly::SocketOptionMap socketOptions_;
 };
 
 } // namespace wangle

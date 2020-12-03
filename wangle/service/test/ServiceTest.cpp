@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -26,7 +26,6 @@
 
 namespace wangle {
 
-using namespace wangle;
 using namespace folly;
 
 typedef Pipeline<IOBufQueue&, std::string> ServicePipeline;
@@ -60,7 +59,7 @@ class ServerPipelineFactory
  public:
 
   typename ServicePipeline::Ptr newPipeline(
-      std::shared_ptr<AsyncTransportWrapper> socket) override {
+      std::shared_ptr<AsyncTransport> socket) override {
     auto pipeline = ServicePipeline::create();
     pipeline->addBack(AsyncSocketHandler(socket));
     pipeline->addBack(SimpleDecode());
@@ -79,7 +78,7 @@ class ClientPipelineFactory : public PipelineFactory<ServicePipeline> {
  public:
 
   typename ServicePipeline::Ptr newPipeline(
-      std::shared_ptr<AsyncTransportWrapper> socket) override {
+      std::shared_ptr<AsyncTransport> socket) override {
     auto pipeline = ServicePipeline::create();
     pipeline->addBack(AsyncSocketHandler(socket));
     pipeline->addBack(SimpleDecode());
@@ -257,16 +256,16 @@ TEST(Wangle, FactoryToService) {
 
 class TimekeeperTester : public Timekeeper {
  public:
-  Future<Unit> after(Duration) override {
+  SemiFuture<Unit> after(HighResDuration) override {
     Promise<Unit> p;
-    auto f = p.getFuture();
+    auto f = p.getSemiFuture();
     promises_.push_back(std::move(p));
     return f;
   }
   template <class Clock>
-  Future<Unit> at(std::chrono::time_point<Clock>) {
+  SemiFuture<Unit> at(std::chrono::time_point<Clock>) {
     Promise<Unit> p;
-    auto f = p.getFuture();
+    auto f = p.getSemiFuture();
     promises_.push_back(std::move(p));
     return f;
   }
@@ -289,7 +288,7 @@ TEST(ServiceFilter, ExpiringMax) {
 
   EXPECT_EQ("test", (*expiringService)("test").get());
   timekeeper.promises_[0].setValue();
-  EXPECT_TRUE((*expiringService)("test").getTry().hasException());
+  EXPECT_TRUE((*expiringService)("test").result().hasException());
 }
 
 TEST(ServiceFilter, ExpiringIdle) {

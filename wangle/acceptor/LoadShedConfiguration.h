@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
 #include <folly/Range.h>
@@ -46,7 +47,7 @@ class LoadShedConfiguration {
 
   LoadShedConfiguration() = default;
 
-  ~LoadShedConfiguration() = default;
+  virtual ~LoadShedConfiguration() = default;
 
   void addWhitelistAddr(folly::StringPiece);
 
@@ -73,76 +74,29 @@ class LoadShedConfiguration {
   }
 
   /**
-   * Set/get the maximum number of downstream connections across all VIPs.
+   * Set/get the cpu usage soft limit.
+   * Various shedding protections should engage when above this limit.
    */
-  void setMaxConnections(uint64_t maxConns) {
-    maxConnections_ = maxConns;
+  void setCpuSoftLimitRatio(double limit) {
+    CHECK_GE(limit, 0.0);
+    CHECK_LE(limit, 1.0);
+    cpuSoftLimitRatio_ = limit;
   }
-  uint64_t getMaxConnections() const {
-    return maxConnections_;
+  double getCpuSoftLimitRatio() const {
+    return cpuSoftLimitRatio_;
   }
 
   /**
-   * Set/get the maximum number of active downstream connections
-   * across all VIPs.
+   * Set/get the cpu usage hard limit.
+   * More extreme shedding protections should engage when above this limit.
    */
-  void setMaxActiveConnections(uint64_t maxActiveConns) {
-    maxActiveConnections_ = maxActiveConns;
+  void setCpuHardLimitRatio(double limit) {
+    CHECK_GE(limit, 0.0);
+    CHECK_LE(limit, 1.0);
+    cpuHardLimitRatio_ = limit;
   }
-  uint64_t getMaxActiveConnections() const {
-    return maxActiveConnections_;
-  }
-
-  /**
-   * Set/get the acceptor queue size which can be used to pause accepting new
-   * client connections.
-   */
-  void setAcceptPauseOnAcceptorQueueSize(
-      const uint64_t acceptPauseOnAcceptorQueueSize) {
-    acceptPauseOnAcceptorQueueSize_ = acceptPauseOnAcceptorQueueSize;
-  }
-  uint64_t getAcceptPauseOnAcceptorQueueSize() const {
-    return acceptPauseOnAcceptorQueueSize_;
-  }
-
-  /**
-   * Set/get the acceptor queue size which can be used to resume accepting new
-   * client connections if accepting is paused.
-   */
-  void setAcceptResumeOnAcceptorQueueSize(
-      const uint64_t acceptResumeOnAcceptorQueueSize) {
-    acceptResumeOnAcceptorQueueSize_ = acceptResumeOnAcceptorQueueSize;
-  }
-  uint64_t getAcceptResumeOnAcceptorQueueSize() const {
-    return acceptResumeOnAcceptorQueueSize_;
-  }
-
-  /**
-   * Set/get the maximum cpu usage.
-   * Regarded as a soft limit; variable amount of new conn shedding should
-   * occur when above this limit.
-   */
-  void setMaxCpuUsage(double max) {
-    CHECK(max >= 0);
-    CHECK(max <= 1);
-    maxCpuUsage_ = max;
-  }
-  double getMaxCpuUsage() const {
-    return maxCpuUsage_;
-  }
-
-  /**
-   * Set/get the minimum cpu idle.
-   * Regarded as a hard limit; every new conn should shed when above this limit
-   * when normalized.
-   */
-  void setMinCpuIdle(double min) {
-    CHECK(min >= 0);
-    CHECK(min <= 1);
-    minCpuIdle_ = min;
-  }
-  double getMinCpuIdle() const {
-    return minCpuIdle_;
+  double getCpuHardLimitRatio() const {
+    return cpuHardLimitRatio_;
   }
 
   /**
@@ -173,8 +127,7 @@ class LoadShedConfiguration {
 
   /**
    * Set/get the soft cpu usage soft limit ratio.
-   * Variable amount of new conn shedding should occur when soft cpu
-   * utilization rises above this limit.
+   * Various shedding protections should engage when above this limit.
    */
   void setSoftIrqCpuSoftLimitRatio(double limit) {
     CHECK_GE(limit, 0.0);
@@ -187,7 +140,7 @@ class LoadShedConfiguration {
 
   /**
    * Set/get the soft cpu usage hard limit ratio.
-   * Every new conn should shed when soft cpu usage rises above this limit.
+   * More extreme shedding protections should engage when above this limit.
    */
   void setSoftIrqCpuHardLimitRatio(double limit) {
     CHECK_GE(limit, 0.0);
@@ -199,31 +152,36 @@ class LoadShedConfiguration {
   }
 
   /**
-   * Set/get the minium actual free memory on the system.
-   * Regarded as a hard limit; every new conn should shed when above this limit
-   * when normalized.
+   * Set/get the memory usage soft limit ratio.
+   * Various shedding protections should engage when above this limit.
    */
-  void setMinFreeMem(uint64_t min) {
-    minFreeMem_ = min;
+  void setMemSoftLimitRatio(double limit) {
+    CHECK_GE(limit, 0.0);
+    CHECK_LE(limit, 1.0);
+    memSoftLimitRatio_ = limit;
   }
-  uint64_t getMinFreeMem() const {
-    return minFreeMem_;
+  double getMemSoftLimitRatio() const {
+    return memSoftLimitRatio_;
   }
 
   /**
-   * Set/get the maximum memory usage.
-   * Regarded as a soft limit; variable amount of new conn shedding should
-   * occur when above this limit.
+   * Set/get the memory usage hard limit ratio.
+   * More extreme shedding protections should engage when above this limit.
    */
-  void setMaxMemUsage(double max) {
-    CHECK_GE(max, 0.0);
-    CHECK_LE(max, 1.0);
-    maxMemUsage_ = max;
+  void setMemHardLimitRatio(double limit) {
+    CHECK_GE(limit, 0.0);
+    CHECK_LE(limit, 1.0);
+    memHardLimitRatio_ = limit;
   }
-  double getMaxMemUsage() const {
-    return maxMemUsage_;
+  double getMemHardLimitRatio() const {
+    return memHardLimitRatio_;
   }
 
+  /**
+   * Set/get the memory usage kill limit ratio.
+   * Threshold above which the process should abort (self-terimate) in order
+   * to protect the underlying host.
+   */
   void setMemKillLimitRatio(double limit) {
     CHECK_GE(limit, 0.0);
     CHECK_LE(limit, 1.0);
@@ -233,40 +191,56 @@ class LoadShedConfiguration {
     return memKillLimitRatio_;
   }
 
-  void setMaxTcpMemUsage(double max) {
-    CHECK_GE(max, 0.0);
-    CHECK_LE(max, 1.0);
-    maxTcpMemUsage_ = max;
+  /**
+   * Set/get the tcp memory usage soft limit ratio.
+   * Various shedding protections should engage when above this limit.
+   */
+  void setTcpMemSoftLimitRatio(double limit) {
+    CHECK_GE(limit, 0.0);
+    CHECK_LE(limit, 1.0);
+    tcpMemSoftLimitRatio_ = limit;
   }
-  double getMaxTcpMemUsage() const {
-    return maxTcpMemUsage_;
-  }
-
-  void setMinFreeTcpMemPct(double min) {
-    CHECK_GE(min, 0.0);
-    CHECK_LE(min, 1.0);
-    minFreeTcpMemPct_ = min;
-  }
-  double getMinFreeTcpMemPct() const {
-    return minFreeTcpMemPct_;
+  double getTcpMemSoftLimitRatio() const {
+    return tcpMemSoftLimitRatio_;
   }
 
-  void setMaxUdpMemUsage(double max) {
-    CHECK_GE(max, 0.0);
-    CHECK_LE(max, 1.0);
-    maxUdpMemUsage_ = max;
+  /**
+   * Set/get the tcp memory usage hard limit ratio.
+   * More extreme shedding protections should engage when above this limit.
+   */
+  void setTcpMemHardLimitRatio(double limit) {
+    CHECK_GE(limit, 0.0);
+    CHECK_LE(limit, 1.0);
+    tcpMemHardLimitRatio_ = limit;
   }
-  double getMaxUdpMemUsage() const {
-    return maxUdpMemUsage_;
+  double getTcpMemHardLimitRatio() const {
+    return tcpMemHardLimitRatio_;
   }
 
-  void setMinFreeUdpMemPct(double min) {
-    CHECK_GE(min, 0.0);
-    CHECK_LE(min, 1.0);
-    minFreeUdpMemPct_ = min;
+  /**
+   * Set/get the udp memory usage soft limit ratio.
+   * Various shedding protections should engage when above this limit.
+   */
+  void setUdpMemSoftLimitRatio(double limit) {
+    CHECK_GE(limit, 0.0);
+    CHECK_LE(limit, 1.0);
+    udpMemSoftLimitRatio_ = limit;
   }
-  double getMinFreeUdpMemPct() const {
-    return minFreeUdpMemPct_;
+  double getUdpMemSoftLimitRatio() const {
+    return udpMemSoftLimitRatio_;
+  }
+
+  /**
+   * Set/get the udp memory usage hard limit ratio.
+   * More extreme shedding protections should engage when above this limit.
+   */
+  void setUdpMemHardLimitRatio(double limit) {
+    CHECK_GE(limit, 0.0);
+    CHECK_LE(limit, 1.0);
+    udpMemHardLimitRatio_ = limit;
+  }
+  double getUdpMemHardLimitRatio() const {
+    return udpMemHardLimitRatio_;
   }
 
   void setLoadUpdatePeriod(std::chrono::milliseconds period) {
@@ -298,35 +272,29 @@ class LoadShedConfiguration {
     uint64_t numLogicalCpuCores{0};
     uint64_t totalMemBytes{0};
   };
-  void checkIsSane(const SysParams& sysParams) const;
+  virtual void checkIsSane(const SysParams& sysParams) const;
 
  private:
   AddressSet whitelistAddrs_;
   NetworkSet whitelistNetworks_;
 
-  uint64_t maxConnections_{0};
-  uint64_t maxActiveConnections_{0};
-
-  uint64_t acceptPauseOnAcceptorQueueSize_{0};
-  uint64_t acceptResumeOnAcceptorQueueSize_{0};
-
-  double maxCpuUsage_{1.0};
-  double minCpuIdle_{0.0};
+  double cpuSoftLimitRatio_{1.0};
+  double cpuHardLimitRatio_{1.0};
   uint64_t cpuUsageExceedWindowSize_{0};
 
   uint64_t softIrqLogicalCpuCoreQuorum_{0};
   double softIrqCpuSoftLimitRatio_{1.0};
   double softIrqCpuHardLimitRatio_{1.0};
 
-  uint64_t minFreeMem_{0};
-  double maxMemUsage_{1.0};
+  double memSoftLimitRatio_{1.0};
+  double memHardLimitRatio_{1.0};
   double memKillLimitRatio_{1.0};
 
-  double maxTcpMemUsage_{1.0};
-  double minFreeTcpMemPct_{0.0};
+  double tcpMemSoftLimitRatio_{1.0};
+  double tcpMemHardLimitRatio_{1.0};
 
-  double maxUdpMemUsage_{1.0};
-  double minFreeUdpMemPct_{0.0};
+  double udpMemSoftLimitRatio_{1.0};
+  double udpMemHardLimitRatio_{1.0};
 
   std::chrono::milliseconds period_;
 

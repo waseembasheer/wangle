@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -17,9 +17,11 @@
 #pragma once
 
 #include <folly/IntrusiveList.h>
-#include <ostream>
 #include <folly/io/async/HHWheelTimer.h>
 #include <folly/io/async/DelayedDestruction.h>
+
+#include <ostream>
+#include <string>
 
 namespace wangle {
 
@@ -101,7 +103,7 @@ class ManagedConnection:
    * If a request is in progress, this should cause the connection to be
    * closed with a reset.
    */
-  virtual void dropConnection() = 0;
+  virtual void dropConnection(const std::string& errorMsg = "") = 0;
 
   /**
    * Dump the state of the connection to the log

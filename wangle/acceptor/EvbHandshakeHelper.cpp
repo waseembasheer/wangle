@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include <wangle/acceptor/EvbHandshakeHelper.h>
 
 namespace wangle {
@@ -32,11 +33,15 @@ void EvbHandshakeHelper::start(
   CHECK(originalEvb_);
 
   sock->detachEventBase();
-  handshakeEvb_->runInEventBaseThread(
-      [ this, sock = std::move(sock) ]() mutable {
-        sock->attachEventBase(handshakeEvb_);
-        helper_->start(std::move(sock), this);
-      });
+  originalEvb_->runInLoop(
+      [this, sock = std::move(sock)]() mutable {
+        handshakeEvb_->runInEventBaseThread(
+            [this, sock = std::move(sock)]() mutable {
+              sock->attachEventBase(handshakeEvb_);
+              helper_->start(std::move(sock), this);
+            });
+      },
+      /* thisIteration = */ true);
 }
 
 void EvbHandshakeHelper::dropConnection(SSLErrorEnum reason) {
@@ -73,13 +78,13 @@ void EvbHandshakeHelper::dropConnection(SSLErrorEnum reason) {
       helper_.reset();
 
       originalEvb_->runInEventBaseThread(
-          [this] { dropConnectionGuard_.clear(); });
+          [this] { dropConnectionGuard_.reset(); });
     });
   }
 }
 
 void EvbHandshakeHelper::connectionReady(
-    folly::AsyncTransportWrapper::UniquePtr transport,
+    folly::AsyncTransport::UniquePtr transport,
     std::string nextProtocol,
     SecureTransportType secureTransportType,
     folly::Optional<SSLErrorEnum> sslErr) noexcept {
@@ -97,34 +102,41 @@ void EvbHandshakeHelper::connectionReady(
 
   transport->detachEventBase();
 
-  originalEvb_->runInEventBaseThread([
-    this,
-    secureTransportType,
-    sslErr,
-    transport = std::move(transport),
-    nextProtocol = std::move(nextProtocol)
-  ]() mutable {
-    DCHECK(callback_);
-    VLOG(5) << "calling underlying callback connectionReady";
-    transport->attachEventBase(originalEvb_);
+  handshakeEvb_->runInLoop(
+      [this,
+       secureTransportType,
+       sslErr,
+       transport = std::move(transport),
+       nextProtocol = std::move(nextProtocol)]() mutable {
+        originalEvb_->runInEventBaseThread(
+            [this,
+             secureTransportType,
+             sslErr,
+             transport = std::move(transport),
+             nextProtocol = std::move(nextProtocol)]() mutable {
+              DCHECK(callback_);
+              VLOG(5) << "calling underlying callback connectionReady";
+              transport->attachEventBase(originalEvb_);
 
-    // If a dropConnection call occured by the time this lambda runs, we don't
-    // want to fire the callback. (See Case 2)
-    if (dropConnectionGuard_.hasValue()) {
-      dropConnectionGuard_.clear();
-      return;
-    }
+              // If a dropConnection call occured by the time this lambda runs,
+              // we don't want to fire the callback. (See Case 2)
+              if (dropConnectionGuard_.has_value()) {
+                dropConnectionGuard_.reset();
+                return;
+              }
 
-    callback_->connectionReady(
-        std::move(transport),
-        std::move(nextProtocol),
-        secureTransportType,
-        sslErr);
-  });
+              callback_->connectionReady(
+                  std::move(transport),
+                  std::move(nextProtocol),
+                  secureTransportType,
+                  sslErr);
+            });
+      },
+      /* thisIteration = */ true);
 }
 
 void EvbHandshakeHelper::connectionError(
-    folly::AsyncTransportWrapper* transport,
+    folly::AsyncTransport* transport,
     folly::exception_wrapper ex,
     folly::Optional<SSLErrorEnum> sslErr) noexcept {
   DCHECK(transport->getEventBase() == handshakeEvb_);
@@ -147,8 +159,8 @@ void EvbHandshakeHelper::connectionError(
 
         // If a dropConnection call occured by the time this lambda runs, we
         // don't want to fire the callback. (See Case 2)
-        if (dropConnectionGuard_.hasValue()) {
-          dropConnectionGuard_.clear();
+        if (dropConnectionGuard_.has_value()) {
+          dropConnectionGuard_.reset();
           return;
         }
         callback_->connectionError(nullptr, std::move(ex), sslErr);

@@ -1,11 +1,11 @@
 /*
- * Copyright 2017-present Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- *   http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -13,13 +13,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #pragma once
 
 #include <folly/Executor.h>
 #include <folly/Memory.h>
 #include <wangle/client/persistence/PersistentCache.h>
 #include <wangle/client/persistence/PersistentCacheCommon.h>
-#include <wangle/client/ssl/SSLSession.h>
+#include <folly/ssl/OpenSSLPtrTypes.h>
 #include <wangle/client/ssl/SSLSessionCacheData.h>
 #include <wangle/client/ssl/SSLSessionCallbacks.h>
 
@@ -59,12 +60,12 @@ class SSLSessionPersistentCacheBase: public SSLSessionCallbacks {
   // implementation must make it's own memory copy of the session data to put
   // into the cache.
   void setSSLSession(
-    const std::string& identity, SSLSessionPtr session) noexcept override;
+    const std::string& identity, folly::ssl::SSLSessionUniquePtr session) noexcept override;
 
   // Return a SSL session if the cache contained session information for the
   // specified identity. It is the caller's responsibility to decrement the
   // reference count of the returned session pointer.
-  SSLSessionPtr getSSLSession(
+  folly::ssl::SSLSessionUniquePtr getSSLSession(
     const std::string& identity) const noexcept override;
 
   // Remove session data of the specified identity from cache. Return true if

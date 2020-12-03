@@ -14,7 +14,7 @@ The pipeline is the most important and powerful abstraction of Wangle. It offers
 
 A pipeline is a chain of request/response handlers that handle upstream (handling request) and downstream (handling response). Once you chain handlers together, it provides an agile way to convert a raw data stream into the desired message type (class) and the inverse -- desired message type to raw data stream.
 
-A handler should do one and only one function - just like the UNIX philisophy. If you have a handler that is doing more than one function than you should split it into individual handlers. This is really important for maintainability and flexibility as its common to change your protocol for one reason or the other.
+A handler should do one and only one function - just like the UNIX philosophy. If you have a handler that is doing more than one function than you should split it into individual handlers. This is really important for maintainability and flexibility as its common to change your protocol for one reason or the other.
 
 All shared state within handlers are not thread-safe. Only use shared state that is guarded by a mutex, atomic lock, etc. If you want to use a thread-safe container then it is recommended to use Folly's lock-free data structures, which can be easily imported because they are a dependency of Wangle and are blazing fast.
 
@@ -42,7 +42,7 @@ This needs to be the final handler in the pipeline. Now the definition of the pi
 // where we define the chain of handlers for each messeage received
 class EchoPipelineFactory : public PipelineFactory<EchoPipeline> {
  public:
-  EchoPipeline::Ptr newPipeline(std::shared_ptr<AsyncTransportWrapper> sock) {
+  EchoPipeline::Ptr newPipeline(std::shared_ptr<AsyncTransport> sock) {
     auto pipeline = EchoPipeline::create();
     pipeline->addBack(AsyncSocketHandler(sock));
     pipeline->addBack(LineBasedFrameDecoder(8192));
@@ -99,7 +99,7 @@ class EchoHandler : public HandlerAdapter<std::string> {
 // where we define the chain of handlers for each message received
 class EchoPipelineFactory : public PipelineFactory<EchoPipeline> {
  public:
-  EchoPipeline::Ptr newPipeline(std::shared_ptr<AsyncTransportWrapper> sock) {
+  EchoPipeline::Ptr newPipeline(std::shared_ptr<AsyncTransport> sock) {
     auto pipeline = EchoPipeline::create();
     pipeline->addBack(AsyncSocketHandler(sock));
     pipeline->addBack(LineBasedFrameDecoder(8192));
@@ -154,7 +154,7 @@ Now onto the client’s pipeline factory. It is identical the server’s pipelin
 // chains the handlers together to define the response pipeline
 class EchoPipelineFactory : public PipelineFactory<EchoPipeline> {
  public:
-  EchoPipeline::Ptr newPipeline(std::shared_ptr<AsyncTransportWrapper> sock) {
+  EchoPipeline::Ptr newPipeline(std::shared_ptr<AsyncTransport> sock) {
     auto pipeline = EchoPipeline::create();
     pipeline->addBack(AsyncSocketHandler(sock));
     pipeline->addBack(
@@ -207,7 +207,7 @@ class EchoHandler : public HandlerAdapter<std::string> {
 // chains the handlers together to define the response pipeline
 class EchoPipelineFactory : public PipelineFactory<EchoPipeline> {
  public:
-  EchoPipeline::Ptr newPipeline(std::shared_ptr<AsyncTransportWrapper> sock) {
+  EchoPipeline::Ptr newPipeline(std::shared_ptr<AsyncTransport> sock) {
     auto pipeline = EchoPipeline::create();
     pipeline->addBack(AsyncSocketHandler(sock));
     pipeline->addBack(
